@@ -6,6 +6,25 @@ A **read-only** patch compliance report for AWS databases. For every Aurora clus
 ./rds_patch_compliance_report.sh -P prod,nonprod -r us-east-1,ap-south-1 -F csv,html,txt -o ~/compliance
 ```
 
+
+## Get it (AWS CloudShell)
+
+**Option 1 - git clone** (update later with `git pull --ff-only`):
+
+```
+git clone https://github.com/manideepgrandhi/rds-patch-compliance.git ~/rds-patch-compliance
+cd ~/rds-patch-compliance && ./rds_patch_compliance_report.sh --version
+```
+
+**Option 2 - release zip** (no git needed; re-run to update):
+
+```
+cd ~ && curl -fsSLO https://github.com/manideepgrandhi/rds-patch-compliance/releases/latest/download/rds-patch-compliance.zip
+unzip -oq rds-patch-compliance.zip && cd ~/rds-patch-compliance && ./rds_patch_compliance_report.sh --version
+```
+
+The zip has one top-level folder `rds-patch-compliance/` (scripts, `lib/`, README, examples, samples, tests) with execute bits kept. Releases: <https://github.com/manideepgrandhi/rds-patch-compliance/releases>. Needs bash, jq and the AWS CLI (all present in CloudShell).
+
 * **Engines and what is judged:**
   * Aurora clusters: `aurora-postgresql`, `aurora-mysql`. Judged **per cluster**; members are listed.
   * Multi-AZ DB clusters (RDS PostgreSQL / MySQL with readable standbys): per cluster.
@@ -47,14 +66,14 @@ Run the report in **CloudShell of each account** and save the raw data with `--s
 
 ```
 # 1) CloudShell, in each account (read-only: describe calls + sts get-caller-identity)
-cd ~/DBA/AWS/RDS_Patch_Compliance && git pull --ff-only
+cd ~/rds-patch-compliance && git pull --ff-only
 ./rds_patch_compliance_report.sh -A -F html -o ~/compliance --save-data
 #   -> ~/compliance/rds_patch_compliance_<ACCOUNTID>_<YYYYmmdd_HHMMSS>.html
 #   -> ~/compliance/rds_patch_<ACCOUNTID>_<YYYYMMDD>.json          (download this one)
 ./rds_patch_compliance_report.sh -r us-east-1 --save-data ~/prod_patch.json   # or name the file
 
 # 2) Git Bash on Windows: put the downloaded files in one folder, then
-cd ~/DBA/AWS/RDS_Patch_Compliance
+cd ~/rds-patch-compliance
 ./rds_patch_compliance_report.sh --merge "C:\Users\me\Downloads\patch data" -o combined.html
 ./rds_patch_compliance_report.sh --merge prod.json nonprod.json dev.json -o combined.html -F html,csv
 ```
@@ -224,7 +243,7 @@ With `-o DIR` each format is written to `DIR/<prefix>_[<ACCOUNTID>_]<YYYYmmdd_HH
 
 ```
 # get the tools in CloudShell (once)
-git clone https://github.com/manideepgrandhi/DBA.git ~/DBA && cd ~/DBA/AWS/RDS_Patch_Compliance
+git clone https://github.com/manideepgrandhi/rds-patch-compliance.git ~/rds-patch-compliance && cd ~/rds-patch-compliance
 
 ./rds_patch_compliance_report.sh                                 # current region, text to the screen
 ./rds_patch_compliance_report.sh -r us-east-1,ap-south-1 -F html -o ~/compliance

@@ -42,7 +42,7 @@ All examples are read-only. Run them in AWS CloudShell (or anywhere with AWS CLI
 ./rds_patch_compliance_report.sh -P prod -r us-east-1 --dry-run
 
 # 11. Weekly e-mail when anything is non-compliant (cron, IST)
-# 30 9 * * 1  cd ~/DBA/AWS/RDS_Patch_Compliance && ./rds_patch_compliance_report.sh -P prod --all-regions -F html,csv -o ~/compliance --alert-email dba-team@example.com -l ~/compliance/run.log
+# 30 9 * * 1  cd ~/rds-patch-compliance && ./rds_patch_compliance_report.sh -P prod --all-regions -F html,csv -o ~/compliance --alert-email dba-team@example.com -l ~/compliance/run.log
 
 # 12. Only the CSV columns you need (CSV goes to stdout without -o)
 ./rds_patch_compliance_report.sh -F csv | python3 -c 'import csv,sys; [print(r["identifier"], r["versions_behind"], r["compliance_status"]) for r in csv.DictReader(sys.stdin)]'

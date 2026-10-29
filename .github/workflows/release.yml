@@ -1,0 +1,36 @@
+name: release
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to (re)build the release for, e.g. v1.3.1'
+        required: true
+permissions:
+  contents: write
+jobs:
+  zip:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+      - name: Build rds-patch-compliance.zip
+        run: |
+          set -euo pipefail
+          mkdir -p dist/rds-patch-compliance
+          git archive HEAD | tar -x -C dist/rds-patch-compliance
+          rm -rf dist/rds-patch-compliance/.github
+          cd dist && zip -rqX rds-patch-compliance.zip rds-patch-compliance
+          unzip -Z rds-patch-compliance.zip | grep 'rds_patch_compliance_report.sh$'
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/rds-patch-compliance.zip --clobber
+          else
+            gh release create "$TAG" dist/rds-patch-compliance.zip --title "$TAG" --notes "rds-patch-compliance $TAG. CloudShell: curl -fsSLO https://github.com/${{ github.repository }}/releases/latest/download/rds-patch-compliance.zip && unzip -oq rds-patch-compliance.zip && cd rds-patch-compliance"
+          fi
