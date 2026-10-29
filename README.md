@@ -23,7 +23,7 @@ cd ~ && curl -fsSLO https://github.com/manideepgrandhi/rds-patch-compliance/rele
 unzip -oq rds-patch-compliance.zip && cd ~/rds-patch-compliance && ./rds_patch_compliance_report.sh --version
 ```
 
-The zip has one top-level folder `rds-patch-compliance/` (scripts, `lib/`, README, examples, samples, tests) with execute bits kept. Releases: <https://github.com/manideepgrandhi/rds-patch-compliance/releases>. Needs bash, jq and the AWS CLI (all present in CloudShell).
+The zip is slim (v1.3.2): one top-level folder `rds-patch-compliance/` with only the runtime files - both `.sh` scripts (execute bits kept), `lib/`, `README.md`, `EXAMPLES.md` and `rds_patch_compliance_report.conf.example`. No `docs/`, `samples/` or `tests/` (they are not needed to run; clone the repo if you want them). GitHub's "Source code" archives are slim too (`.gitattributes` export-ignore). Releases: <https://github.com/manideepgrandhi/rds-patch-compliance/releases>. Needs bash, jq and the AWS CLI (all present in CloudShell).
 
 * **Engines and what is judged:**
   * Aurora clusters: `aurora-postgresql`, `aurora-mysql`. Judged **per cluster**; members are listed.
@@ -33,7 +33,7 @@ The zip has one top-level folder `rds-patch-compliance/` (scripts, `lib/`, READM
   * Instances that belong to a cluster are not separate rows. Other engines (e.g. RDS Custom, Db2) are ignored.
 * **Strictly read-only.** Calls: `sts get-caller-identity`, `ec2 describe-regions` (only for `--all-regions`), the `--all-regions` discovery probe (`rds describe-db-instances` / `describe-db-clusters --max-records 20 --query length(...) --no-paginate`), `rds describe-db-clusters`, `rds describe-db-instances`, `rds describe-pending-maintenance-actions`, `rds|docdb|neptune describe-db-engine-versions --engine E --engine-version V` and `rds describe-db-major-engine-versions`. The `upgrade_command` column is **printed only**, never run.
 * **Requirements:** Bash 4.4+, AWS CLI v2 (2.15+ recommended, for `describe-db-major-engine-versions`), jq 1.6+. Keep `lib/compliance.jq` next to the script. curl and mail/mailx/sendmail only for the optional alerts.
-* **Siblings:** [RDS_Pending_Maintenance](../RDS_Pending_Maintenance/README.md) shows *what maintenance is pending and when*; [RDS_Patch_Runner](../RDS_Patch_Runner/README.md) *applies* it to one cluster safely. This tool answers *how far behind are we on minor versions*.
+* **Siblings:** [RDS_Pending_Maintenance](https://github.com/manideepgrandhi/DBA/tree/main/AWS/RDS_Pending_Maintenance) shows *what maintenance is pending and when*; [RDS_Patch_Runner](https://github.com/manideepgrandhi/DBA/tree/main/AWS/RDS_Patch_Runner) *applies* it to one cluster safely. This tool answers *how far behind are we on minor versions*.
 
 ![HTML report: summary cards, region breakdown, per-engine/major table and most-behind list](docs/sample_report_html.png)
 
@@ -315,6 +315,7 @@ No AWS account is used and nothing can reach AWS.
 
 ## Changelog
 
+* **1.3.2** - Release zip contains only runtime files (scripts, `lib/`, README, EXAMPLES, conf example); `docs/`, `samples/`, `tests/` excluded, also from GitHub source archives (`.gitattributes`). Sibling links point to the DBA repo. No report changes.
 * **1.3.1** - Removed the "Top N most behind" section from HTML and text (and `summary.top_behind` from JSON); `--top` / `top =` still accepted, ignored with a warning. Shorter header in HTML and text (title, run time UTC + IST, accounts, region count line, one-line rule); the long explanations moved to a collapsed **About this report** (HTML bottom) / `ABOUT THIS REPORT` (text end). `--merge` reads v1.3.0 and v1.3.1 `--save-data` files from either script (tested with committed v1.3.0 fixtures in `tests/fixtures/v130/`).
 * **summary 1.3.0** - `--save-data [FILE]` and offline `--merge FILE|DIR...` (delegated to the full report, so the data format, exit 3 and Git Bash handling are identical); PER ACCOUNT table and MERGED INPUTS list in txt / html; `*_accounts.csv`; account number in single-account file names; all jq output made LF-only for Git Bash. Full report: `--merge --oracle-any-patch-line` now recounts Oracle rows from the saved targets (previously the flag was ignored in merge mode).
 * **1.3.0** - `--save-data [FILE.json]` (raw data, `rds_patch_<ACCOUNTID>_<YYYYMMDD>.json`) and `--merge FILE|DIR... -o combined.html`: offline (jq only, 0 AWS calls), Git Bash safe (CRLF, Windows paths, spaces), newest `collected_at` wins per account, days recomputed at merge time, exit 3 on a bad input. Account number in single-account file names and in the header, tables and every row; new Per account table; Merged inputs note. HTML filters (account, region, engine, status, DB-name search) that recompute the cards and tables, and Export CSV of the filtered rows. CSV adds `next_maintenance` and `days_until_maintenance` (30 columns).

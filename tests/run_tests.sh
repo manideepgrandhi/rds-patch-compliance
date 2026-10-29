@@ -118,7 +118,7 @@ vce oracle-ee "${O}2026-10.mrp-2026-10.r1" 1 "${O}2026-07.mrp-2026-07.r10"
 
 echo "== usage / validation"
 t help 0 fleet --help;               has help out 'Exit codes'; has help out 'read-only'; has help out '--max-behind'; has help out 'NEVER run'
-t version 0 fleet --version;         has version out '1\.3\.1'
+t version 0 fleet --version;         has version out '1\.3\.2'
 t badopt 1 fleet --bogus
 t badfmt 1 fleet -r us-east-1 -F xml
 t multinoout 1 fleet -r us-east-1 -F csv,html
@@ -521,7 +521,8 @@ CP="$OUT/compat in"; mkdir -p "$CP"; cp "$HERE"/fixtures/v130/*.json "$CP/"
 SUMS="$HERE/../rds_patch_compliance_summary.sh"
 RDS_PCR_NOW=1790000000 MOCK_SCENARIO=fleet "$SCRIPT" -P prod -r us-east-1 --save-data "$CP/prod_v131_report.json" -o "$OUT/cpx" -F json >/dev/null 2>&1
 RDS_PCR_NOW=1790200000 MOCK_SCENARIO=fleet "$SUMS" -P dev -r eu-west-1 --save-data "$CP/dev_v131_summary.json" >/dev/null 2>&1
-chk "compat inputs: 2 x v1.3.0 + 2 x v1.3.1" test "$(jq -r .script_version "$CP"/*.json | sort | uniq -c | tr -s ' ' | tr '\n' ';')" = " 2 1.3.0; 2 1.3.1;"
+CURV=$("$SCRIPT" --version | awk '{print $2}')
+chk "compat inputs: 2 x v1.3.0 + 2 x current ($CURV)" test "$(jq -r .script_version "$CP"/*.json | sort | uniq -c | tr -s ' ' | tr '\n' ';')" = " 2 1.3.0; 2 $CURV;"
 mg cmp 0 --merge "$CP" -o "$OUT/compat out/combined.html" -F html,json,csv,txt
 CJ="$OUT/compat out/combined.json"
 chk "compat: 3 accounts, 24 servers, 9 non-compliant" test "$(jq -c '[(.summary.accounts | length), .summary.total, .summary.non_compliant]' "$CJ")" = '[3,24,9]'
