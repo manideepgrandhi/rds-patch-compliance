@@ -31,7 +31,7 @@ The zip is slim (v1.3.2): one top-level folder `rds-patch-compliance/` with only
   * DocumentDB and Neptune clusters: per cluster.
   * Standalone RDS instances: `postgres`, `mysql`, `mariadb`, `sqlserver-ee/se/ex/web`, `oracle-ee/se2/ee-cdb/se2-cdb`. Judged **per instance** (read replicas are their own rows).
   * Instances that belong to a cluster are not separate rows. Other engines (e.g. RDS Custom, Db2) are ignored.
-* **Strictly read-only.** Calls: `sts get-caller-identity`, `ec2 describe-regions` (only for `--all-regions`), the `--all-regions` discovery probe (`rds describe-db-instances` / `describe-db-clusters --max-records 20 --query length(...) --no-paginate`), `rds describe-db-clusters`, `rds describe-db-instances`, `rds describe-pending-maintenance-actions`, `rds|docdb|neptune describe-db-engine-versions --engine E --engine-version V` and `rds describe-db-major-engine-versions`. The `upgrade_command` column is **printed only**, never run.
+* **Strictly read-only.** Calls: `sts get-caller-identity`, `ec2 describe-regions` (only for `--all-regions`), the `--all-regions` discovery probe (`rds describe-db-instances` / `describe-db-clusters --max-records 20 --query length(...) --no-paginate`), `rds describe-db-clusters`, `rds describe-db-instances`, `rds describe-pending-maintenance-actions`, `rds|docdb|neptune describe-db-engine-versions --engine E --engine-version V` and `rds describe-db-major-engine-versions`, and (v1.4.0, once per account, only when Aurora clusters are found) `rds describe-global-clusters`. No upgrade or modify command is generated or run.
 * **Requirements:** Bash 4.4+, AWS CLI v2 (2.15+ recommended, for `describe-db-major-engine-versions`), jq 1.6+. Keep `lib/compliance.jq` next to the script. curl and mail/mailx/sendmail only for the optional alerts.
 * **Siblings:** [RDS_Pending_Maintenance](https://github.com/manideepgrandhi/DBA/tree/main/AWS/RDS_Pending_Maintenance) shows *what maintenance is pending and when*; [RDS_Patch_Runner](https://github.com/manideepgrandhi/DBA/tree/main/AWS/RDS_Patch_Runner) *applies* it to one cluster safely. This tool answers *how far behind are we on minor versions*.
 
@@ -165,7 +165,6 @@ Not returned = deprecated or not offered in that region: `deprecated_version=tru
 | newer_versions | 15.10, 15.12, 15.13 | 15.10, 15.12 |
 | latest_minor_version | 15.13 | 15.12 (default auto-upgrade target 15.12) |
 | versions_behind | 3 → NON-COMPLIANT | **2 → COMPLIANT** |
-| upgrade_command | `--engine-version 15.13` | `--engine-version 15.12` |
 
 Boundary: 2 valid minor targets = COMPLIANT, 3 = NON-COMPLIANT (e.g. 14.12 with targets 14.13, 14.15, 14.17).
 
@@ -218,20 +217,31 @@ In the summary table the Oracle "latest minor" is shown per patch line. Sample: 
 * **Header** (v1.3.1, text and HTML; merged reports too): title, run time UTC + IST, accounts with numbers, the region count line and a one-line rule. Longer explanations (counting source, region mode, pending maintenance, read-only note) are in `ABOUT THIS REPORT` at the end of the text and a collapsed **About this report** section at the bottom of the HTML.
 * **SUMMARY first** (text and HTML): totals with % compliant; per engine and major version: total / compliant / non-compliant / unknown, latest minor, support state; counts of Extended Support, support ending soon, auto minor upgrade off, pending maintenance, deprecated.
 * **Details:** one section per engine, sorted NON-COMPLIANT first, then UNKNOWN, COMPLIANT; within that most behind first, then name.
-* **HTML:** single file, summary cards, filter box (any text), click a column header to sort, colour-coded status, **Copy** button on each upgrade command.
+* **HTML:** single file, summary cards, filter box (any text), click a column header to sort, colour-coded status; dropdown filters for account, region, engine, status and **Global cluster** (each global database, `Not global`, and `Global: unknown` when the lookup failed).
 * `--non-compliant-only` shows only NON-COMPLIANT rows (the summary still counts everything).
 
 ### Columns (CSV; the same fields are in JSON, HTML and text)
 
-`account_id, profile, region, resource_type, identifier, members, engine, major_version, current_version, latest_minor_version, versions_behind, newer_versions, default_auto_upgrade_target, compliance_status, auto_minor_upgrade, standard_support_end, extended_support_end, support_flag, pending_actions_count, pending_actions, deprecated_version, maint_window_utc, maint_window_ist, tag:<key>..., arn, upgrade_command, note`
+`account_id, profile, region, resource_type, identifier, members, engine, major_version, current_version, latest_minor_version, versions_behind, newer_versions, default_auto_upgrade_target, compliance_status, auto_minor_upgrade, standard_support_end, extended_support_end, support_flag, pending_actions_count, pending_actions, deprecated_version, maint_window_utc, maint_window_ist, next_maintenance, days_until_maintenance, global_cluster, global_role` (27 columns)
+
+v1.4.0 removed the tag columns (Environment / Owner / Application), `arn`, `upgrade_command` (and the HTML Copy button) and `note` from every displayed output (HTML, CSV, text, summary script). They are still in the `-F json` rows and the `--save-data` file; merged outputs don't show them either. `-T` / `tag_columns` are accepted and ignored with a warning.
 
 * `resource_type`: `aurora-cluster`, `multi-az-cluster`, `docdb-cluster`, `neptune-cluster`, `instance`.
 * `members`: cluster member instances, writer marked, e.g. `orders-pg15-1 (writer), orders-pg15-2`.
 * `newer_versions`: the valid minor upgrade targets counted, space-separated in CSV. `default_auto_upgrade_target`: the `AutoUpgrade=true` target.
 * `pending_actions_count` / `pending_actions`: see "Pending maintenance" above.
 * `maint_window_ist`: the preferred maintenance window converted to IST (UTC+5:30), e.g. `sat:21:00-sat:21:30` → `sun:02:30-sun:03:00`.
-* Tag columns: `-T Environment,Owner,Application` (default); `-T ''` for none.
-* `upgrade_command` (only when behind > 0): `aws rds modify-db-cluster --db-cluster-identifier X --engine-version <latest minor> --region R [--profile P]` for clusters (`aws docdb` / `aws neptune` for those engines), `modify-db-instance --db-instance-identifier` for instances. **No `--apply-immediately`**, so the upgrade waits for the next maintenance window. Review it before running it yourself; an Aurora minor upgrade restarts all instances of the cluster together.
+* `global_cluster` / `global_role`: the Aurora global database the cluster belongs to and its role (`primary` / `secondary`); empty for anything else; `unknown` role (empty cluster) when `describe-global-clusters` failed or the data file predates v1.4.0.
+
+### Aurora global databases (v1.4.0)
+
+One read-only `rds describe-global-clusters` per account (global clusters are account-wide), only when an Aurora cluster was found. If it fails (for example AccessDenied) the run continues with a warning, it is not counted as an AWS error, and the Aurora rows show global `unknown`.
+
+* Each member cluster is still a normal row in its own region (badge `global <name> · primary|secondary`; headless secondaries marked).
+* **Global databases** section (HTML after Per region, text `GLOBAL DATABASES`): per global database the account, engine and overall status (worst member), then each member's role, region, cluster, version and status. Members in regions that weren't scanned show `NOT SCANNED`. **region status mismatch** is flagged when members run the same version but get different statuses (each region has its own list of valid targets).
+* Pending maintenance actions on the global cluster ARN are listed on the primary as `... on global <name>` and in the section.
+* Header / cards: `Global databases: N (M members)`. The summary script shows the same line and card and lists members of one global database together in its non-compliant list (`GLOBAL DB` column).
+* `--save-data` files carry `globals` and `global_lookup` (`schema_minor: 1`; `schema_version` stays 1, so older files still merge). When merging, accounts from older files show global `unknown`; members are grouped across regions within an account.
 
 ### Output files
 
@@ -265,7 +275,7 @@ More in [EXAMPLES.md](EXAMPLES.md). `--help` lists every option.
 | `--warn-days N` | "support ends soon" window, default 180 |
 | `--non-compliant-only` | only NON-COMPLIANT rows |
 | `--fail-on-noncompliant` | exit 5 when any NON-COMPLIANT |
-| `-T, --tag-columns` | tag keys as columns |
+| `-T, --tag-columns` | ignored since v1.4.0 (warning); tag columns are no longer shown |
 | `-F, --format` / `-o, --output-dir` / `--prefix` | `text,csv,json,html` (`txt` = text) / folder / file prefix |
 | `--top N` | deprecated in v1.3.1: accepted and ignored with a warning (the most-behind list was removed) |
 | `-l, --log-file` | append timestamped log lines |
@@ -311,10 +321,11 @@ See [rds_patch_compliance_report.conf.example](rds_patch_compliance_report.conf.
 No AWS account is used and nothing can reach AWS.
 
 * `tests/run_tests.sh` - 420+ checks against `tests/mock/aws` (realistic fleet: Aurora PostgreSQL 11/12/14/15/16 incl. Extended Support, Aurora MySQL 3, RDS PostgreSQL 13/16/17, MySQL 8.0/8.4, MariaDB, SQL Server, Oracle, Multi-AZ DB cluster, DocumentDB, Neptune). Covers counting only from ValidUpgradeTarget (the mock's full list differs on purpose), major targets excluded, the default auto-upgrade target, current version not returned, pending-actions text, version compare units (`15.10 > 15.9`, Aurora MySQL, SQL Server, Oracle), the 2/3 boundary, `--max-behind`, lookup failure (UNKNOWN), deprecated version, lifecycle API missing / denied, multi-profile / multi-region, all regions, filters, outputs, alerts (local stubs), region discovery (empty regions skipped, cluster-only region, probe AccessDenied scanned anyway, `--no-discover`, `-r` without probe, parallel probes faster than serial with the same result, dry-run, `aws_calls`), the region breakdown adding up to the totals in every format, a 3000-instance fleet (no ARG_MAX issues), v1.3.0 `--save-data` / `--merge` (names, contents, read-only calls, zero AWS calls during merge, newer file wins, days recomputed, exit 3 inputs, Windows paths with spaces and a CRLF `jq` stub), and that no file is written into the tool folder. When node, `puppeteer-core` (on `NODE_PATH`) and Chrome are present it also runs `tests/browser_check.js`: filters, recomputed totals and per-region rows, and the CSV export (quoting, BOM, formula guard). **Guard:** it refuses to run unless `aws` on PATH is the mock, and sets fake credentials and a dead endpoint.
-* `tests/validate_cli.sh` - replays every command line the script issues, and every printed `upgrade_command`, through the **real** AWS CLI v2 with fake credentials and a dead endpoint (`127.0.0.1:9`); checks mock output shapes against `--generate-cli-skeleton output`; and runs the script with the real CLI against a local fake endpoint that pages every list (Marker) to prove pagination, and `-A` against a region-aware fake endpoint to prove each discovery probe is a single request, a denied probe becomes an error region that is still scanned, and only regions with databases get a full scan. A wrapper refuses any real-CLI call without a loopback endpoint.
+* `tests/validate_cli.sh` - replays every command line the script issues through the **real** AWS CLI v2 with fake credentials and a dead endpoint (`127.0.0.1:9`); checks mock output shapes against `--generate-cli-skeleton output`; and runs the script with the real CLI against a local fake endpoint that pages every list (Marker) to prove pagination, and `-A` against a region-aware fake endpoint to prove each discovery probe is a single request, a denied probe becomes an error region that is still scanned, and only regions with databases get a full scan. A wrapper refuses any real-CLI call without a loopback endpoint.
 
 ## Changelog
 
+* **1.4.0** - Aurora global database awareness (read-only `rds describe-global-clusters`, once per account; failure = warning + global `unknown`): `global_cluster` / `global_role` columns at the end, row badge, **Global cluster** dropdown (incl. Not global), Global databases section (overall = worst member, `region status mismatch`, `NOT SCANNED` members, pending actions on the global ARN), `Global databases: N (M members)` in the header, cards and summary script (non-compliant list grouped by global database). `--save-data` adds `globals` / `global_lookup` (`schema_minor: 1`); older files still merge (global unknown). Removed from all displayed outputs: tag columns, `arn`, `upgrade_command` + Copy button, `note`; merge no longer unions tag columns; `-T` ignored with a warning. CSV is 27 columns.
 * **1.3.2** - Release zip contains only runtime files (scripts, `lib/`, README, EXAMPLES, conf example); `docs/`, `samples/`, `tests/` excluded, also from GitHub source archives (`.gitattributes`). Sibling links point to the DBA repo. No report changes.
 * **1.3.1** - Removed the "Top N most behind" section from HTML and text (and `summary.top_behind` from JSON); `--top` / `top =` still accepted, ignored with a warning. Shorter header in HTML and text (title, run time UTC + IST, accounts, region count line, one-line rule); the long explanations moved to a collapsed **About this report** (HTML bottom) / `ABOUT THIS REPORT` (text end). `--merge` reads v1.3.0 and v1.3.1 `--save-data` files from either script (tested with committed v1.3.0 fixtures in `tests/fixtures/v130/`).
 * **summary 1.3.0** - `--save-data [FILE]` and offline `--merge FILE|DIR...` (delegated to the full report, so the data format, exit 3 and Git Bash handling are identical); PER ACCOUNT table and MERGED INPUTS list in txt / html; `*_accounts.csv`; account number in single-account file names; all jq output made LF-only for Git Bash. Full report: `--merge --oracle-any-patch-line` now recounts Oracle rows from the saved targets (previously the flag was ignored in merge mode).

@@ -35,6 +35,13 @@ def ora_recount($any):
     rows: [ $rows[] | ora_recount($OAL) | if .versions_behind == null or .compliance_status == "UNKNOWN" then .
                       else .compliance_status = (if .versions_behind > $M then "NON-COMPLIANT" else "COMPLIANT" end) end ],
     region_status: [ $F[] | . as $f | ($f.d.region_status // [])[] | select(.account | used($f)) ],
+    # Aurora global databases (data schema 1.1+); files saved before v1.4.0 have none -> their accounts are "unknown"
+    globals: [ $F[] | . as $f | ($f.d.globals // [])[] | select(.account | used($f)) ],
+    global_lookup: [ $F[] | . as $f
+                     | if $f.d | has("global_lookup") then ($f.d.global_lookup[] | select(.account | used($f)))
+                       else ($f.d.accounts[] | select(.account | used($f))
+                             | {account, profile, region: "", status: "unknown", count: 0,
+                                message: "data file saved by v\($f.d.script_version // "?") without global database data"}) end ],
     errors: ([ $F[] | . as $f | ($f.d.errors // [])[] | select((.account | used($f)) or ((.account as $a | $KNOWN | index([$a])) == null)) ]
              | unique_by([.account, .profile, .region, .call, .message])),
     regions: ([ $rows[].region ] + [ $F[] | . as $f | ($f.d.region_status // [])[] | select(.account | used($f)) | .region ] | unique),

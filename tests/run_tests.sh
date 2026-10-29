@@ -117,8 +117,8 @@ vce oracle-ee "${O}2026-07.mrp-2026-07.r2" 1 "${O}2026-07.mrp-2026-07.r1"
 vce oracle-ee "${O}2026-10.mrp-2026-10.r1" 1 "${O}2026-07.mrp-2026-07.r10"
 
 echo "== usage / validation"
-t help 0 fleet --help;               has help out 'Exit codes'; has help out 'read-only'; has help out '--max-behind'; has help out 'NEVER run'
-t version 0 fleet --version;         has version out '1\.3\.2'
+t help 0 fleet --help;               has help out 'Exit codes'; has help out 'read-only'; has help out '--max-behind'; has help out 'describe-global-clusters'
+t version 0 fleet --version;         has version out '1\.4\.0'
 t badopt 1 fleet --bogus
 t badfmt 1 fleet -r us-east-1 -F xml
 t multinoout 1 fleet -r us-east-1 -F csv,html
@@ -141,7 +141,7 @@ t confunk 1 fleet --config "$OUT/unk.conf";     has confunk err "unknown key 'bo
 printf '# test\nprofiles = prod\nregions = us-east-1\nmax_behind = 5   # comment\nformat = json\n$(touch %s/pwned)\n' "$OUT" >"$OUT/inj.conf"
 t confinj 1 fleet --config "$OUT/inj.conf";     chk "config is parsed, never sourced" test ! -e "$OUT/pwned"
 printf 'profiles = prod\nregions = us-east-1\nmax_behind = 5   # comment\nformat = json\ntag_columns = Owner\n' >"$OUT/c.conf"
-t conf 0 fleet --config "$OUT/c.conf";          jqt conf '.summary.max_behind == 5'; jqt conf '.meta.tag_columns == ["Owner"]'
+t conf 0 fleet --config "$OUT/c.conf";          jqt conf '.summary.max_behind == 5'; jqt conf '.meta.tag_columns == []'; has conf err 'tag_columns is ignored'
 t confover 0 fleet --config "$OUT/c.conf" --max-behind 1;  jqt confover '.summary.max_behind == 1'
 : >"$MOCK_LOG"
 t confex 0 fleet --config "$HERE/../rds_patch_compliance_report.conf.example" --dry-run
@@ -179,7 +179,7 @@ rowt fleet pay-aurora-pg16 '.default_auto_upgrade_target == null'
 chk "every engine-version call names --engine-version (no full-list call)" test "$(jq -c 'select(index("describe-db-engine-versions")) | select(index("--engine-version") | not)' "$MOCK_LOG" | wc -l)" -eq 0
 chk "engine-version calls = distinct engine+version+region" test "$(jq -c 'select(index("describe-db-engine-versions"))' "$MOCK_LOG" | wc -l)" -eq "$(jq '[.rows[] | [.engine, .current_version, .region]] | unique | length' "$OUT/fleet.out")"
 rowt fleet dev-aurora-pg15 '.versions_behind == 7 and .latest_minor_version == "15.13" and .account_id == "222222222222" and .region == "ap-south-1"'
-rowt fleet pay-aurora-pg16 '.versions_behind == 0 and .compliance_status == "COMPLIANT" and .upgrade_command == ""'
+rowt fleet pay-aurora-pg16 '.versions_behind == 0 and .compliance_status == "COMPLIANT"'
 rowt fleet shop-aurora-mysql '.versions_behind == 5 and .major_version == "8.0" and .latest_minor_version == "8.0.mysql_aurora.3.10.0"'
 rowt fleet cms-aurora-mysql '.versions_behind == 1 and .compliance_status == "COMPLIANT"'
 rowt fleet hr-sql '.versions_behind == 3 and .major_version == "15.00" and .latest_minor_version == "15.00.4430.1.v1" and .compliance_status == "NON-COMPLIANT"'
@@ -196,7 +196,7 @@ rowt fleet graph-neptune '.resource_type == "neptune-cluster" and .versions_behi
 rowt fleet ledger-maz '.resource_type == "multi-az-cluster" and .versions_behind == 3 and .member_count == 3 and .auto_minor_upgrade == "true"'
 echo "-- support / flags"
 rowt fleet legacy-aurora-pg12 '.support_flag == "past standard support (Extended Support charges)" and .past_standard_support and .extended_support_end != null'
-rowt fleet old-aurora-pg11 '.deprecated_version and .compliance_status == "UNKNOWN" and .versions_behind == null and .newer_versions == [] and .latest_minor_version == null and .upgrade_command == "" and (.note | test("current version not returned by describe-db-engine-versions"))'
+rowt fleet old-aurora-pg11 '.deprecated_version and .compliance_status == "UNKNOWN" and .versions_behind == null and .newer_versions == [] and .latest_minor_version == null and (.note | test("current version not returned by describe-db-engine-versions"))'
 rowt fleet analytics-pg '.nearing_end_of_support and (.support_flag | test("^standard support ends in 1[0-9][0-9] days$"))'
 rowt fleet inv-mysql '.nearing_end_of_support'
 rowt fleet hr-sql '(.support_flag | startswith("unknown"))'
@@ -215,13 +215,8 @@ rowt fleet inv-mysql '(.pending_actions | test("^db-upgrade \\(auto-apply [0-9-]
 rowt fleet catalog-docdb '(.pending_actions | startswith("system-update on member catalog-docdb-2 (auto-apply "))'
 rowt fleet pay-aurora-pg16 '.pending_actions == "" and .pending_actions_count == 0'
 echo "-- upgrade commands (printed only)"
-rowt fleet orders-aurora-pg15 '.upgrade_command == "aws rds modify-db-cluster --db-cluster-identifier orders-aurora-pg15 --engine-version 15.12 --region us-east-1 --profile prod"'
-rowt fleet inv-mysql '.upgrade_command == "aws rds modify-db-instance --db-instance-identifier inv-mysql --engine-version 8.0.43 --region us-east-1 --profile prod"'
-rowt fleet graph-neptune '(.upgrade_command | startswith("aws neptune modify-db-cluster --db-cluster-identifier graph-neptune --engine-version 1.3.4.0"))'
-rowt fleet fin-ora '(.upgrade_command | test("--engine-version 19.0.0.0.ru-2025-07.rur-2025-07.r1 "))'
-jqt fleet '[.rows[].upgrade_command | select(test("apply-immediately"))] | length == 0'
+jqt fleet '[.rows[] | select(has("upgrade_command") or has("tags_shown"))] | length == 0'
 t noprofile 0 fleet -r us-east-1 -F json -e postgres
-jqt noprofile '[.rows[].upgrade_command | select(. != "" and test("--profile"))] | length == 0'
 jqt noprofile '[.rows[].profile] | unique == ["default"]'
 echo "-- sorting / summary"
 jqt fleet '[.rows[] | select(.engine == "aurora-postgresql") | .identifier] == ["dev-aurora-pg15","legacy-aurora-pg12","reports-aurora-pg14","old-aurora-pg11","crm-aurora-pg15","orders-aurora-pg15","pay-aurora-pg16"]'
@@ -249,7 +244,7 @@ jqt idglob '(.rows | length) == 2'
 t empty 0 empty -P prod -r us-east-1;  has empty out 'No servers matched'
 echo "-- failures"
 t lookupfail 0 lookupfail -P prod -r us-east-1 -F json
-rowt lookupfail shop-aurora-mysql '.compliance_status == "UNKNOWN" and .versions_behind == null and .upgrade_command == "" and (.note | test("Throttling"))'
+rowt lookupfail shop-aurora-mysql '.compliance_status == "UNKNOWN" and .versions_behind == null and (.note | test("Throttling"))'
 jqt lookupfail '.summary.unknown == 3 and .summary.errors == 0'
 has lookupfail err 'WARN.*aurora-mysql .* failed'
 t nolc 0 nolc -P prod -r us-east-1 -F json
@@ -271,10 +266,10 @@ mapfile -t F < <(find "$OUT/rep" -type f | sort)
 chk "5 files written (txt, html, json, csv, regions csv)" test "${#F[@]}" -eq 5
 chk "files are 0640" test "$(stat -c %a "${F[@]}" | sort -u)" = 640
 CSV="$(find "$OUT/rep" -name '*.csv' ! -name '*_regions.csv')"; HTML="$(find "$OUT/rep" -name '*.html')"; TXT="$(find "$OUT/rep" -name '*.txt')"
-chk "csv header" test "$(head -1 "$CSV")" = '"account_id","profile","region","resource_type","identifier","members","engine","major_version","current_version","latest_minor_version","versions_behind","newer_versions","default_auto_upgrade_target","compliance_status","auto_minor_upgrade","standard_support_end","extended_support_end","support_flag","pending_actions_count","pending_actions","deprecated_version","maint_window_utc","maint_window_ist","tag:Environment","tag:Owner","arn","upgrade_command","note","next_maintenance","days_until_maintenance"'
+chk "csv header" test "$(head -1 "$CSV")" = '"account_id","profile","region","resource_type","identifier","members","engine","major_version","current_version","latest_minor_version","versions_behind","newer_versions","default_auto_upgrade_target","compliance_status","auto_minor_upgrade","standard_support_end","extended_support_end","support_flag","pending_actions_count","pending_actions","deprecated_version","maint_window_utc","maint_window_ist","next_maintenance","days_until_maintenance","global_cluster","global_role"'
 chk "csv rows = 22" test "$(python3 -c 'import csv,sys; print(sum(1 for _ in csv.reader(open(sys.argv[1])))-1)' "$CSV")" -eq 22
-chk "csv parses with 30 columns everywhere" test "$(python3 -c 'import csv,sys; print(set(len(r) for r in csv.reader(open(sys.argv[1]))))' "$CSV")" = "{30}"
-for p in 'id="q"' 'class="cp"' 'class="badge">2<' 'details class="pend"' '01:30 IST' "haven't been applied yet" 'Valid minor targets' 'Auto-upgrade default' 'table class="main"' 'st bad' 'st ok' 'Extended Support' 'id="about"' 'About this report' 'Per engine and major version' 'localeCompare' 'href="#eng-aurora-postgresql"'; do
+chk "csv parses with 27 columns everywhere" test "$(python3 -c 'import csv,sys; print(set(len(r) for r in csv.reader(open(sys.argv[1]))))' "$CSV")" = "{27}"
+for p in 'id="q"' 'id="f-global"' 'class="badge">2<' 'details class="pend"' '01:30 IST' "haven't been applied yet" 'Valid minor targets' 'Auto-upgrade default' 'table class="main"' 'st bad' 'st ok' 'Extended Support' 'id="about"' 'About this report' 'Per engine and major version' 'localeCompare' 'href="#eng-aurora-postgresql"'; do
     if grep -qF -- "$p" "$HTML"; then ok "html has $p"; else bad "html lacks $p"; fi
 done
 chk "html is well-formed enough (python html.parser)" python3 -c 'import html.parser,sys; html.parser.HTMLParser().feed(open(sys.argv[1]).read())' "$HTML"
@@ -532,7 +527,8 @@ chk "compat: no top_behind in merged JSON" jq -e '.summary | has("top_behind") |
 CT="$OUT/compat out/combined.txt"; CH="$OUT/compat out/combined.html"
 chk "compat txt: no MOST BEHIND, has PER ACCOUNT + ABOUT" bash -c "! grep -qi 'most behind' '$CT' && grep -q '^PER ACCOUNT' '$CT' && grep -q '^ABOUT THIS REPORT' '$CT'"
 chk "compat html: no Top most behind, has About details" bash -c "! grep -qi 'most behind' '$CH' && grep -q 'id=\"about\"' '$CH'"
-chk "compat csv: 24 rows x 31 cols (merge adds a column)" test "$(python3 -c 'import csv,sys; r=list(csv.reader(open(sys.argv[1]))); print(len(r)-1, set(map(len,r)))' "$OUT/compat out/combined.csv")" = "24 {31}"
+chk "compat csv: 24 rows x 27 cols (no tag columns)" test "$(python3 -c 'import csv,sys; r=list(csv.reader(open(sys.argv[1]))); print(len(r)-1, set(map(len,r)))' "$OUT/compat out/combined.csv")" = "24 {27}"
+chk "compat: merged outputs from pre-1.4 files show no command / ARN / tags" bash -c "! grep -lE 'modify-db|arn:aws|tag:|upgrade_command' '$OUT/compat out/combined.csv' '$OUT/compat out/combined.html' '$OUT/compat out/combined.txt' && ! grep -qE 'modify-db|upgrade_command' '$OUT/compat out/combined.json'"
 chk "compat: same numbers as merging only v1.3.1-format data" test "$(jq -c '.summary | [.compliant,.non_compliant,.unknown]' "$CJ")" = '[14,9,1]'
 mkdir -p "$OUT/drv/c/Users/DBA Team/compat data"; cp "$CP"/*.json "$OUT/drv/c/Users/DBA Team/compat data/"
 PATH="$CR:$NOAWS:$PATH" RDS_PCR_DRIVE_ROOT="$OUT/drv" RDS_PCR_NOW=1791000000 t cmp_win 0 fleet --merge 'C:\Users\DBA Team\compat data' -o "$OUT/compat win/combined.html" -F html,json,csv,txt
@@ -545,6 +541,43 @@ if command -v node >/dev/null 2>&1 && [[ -x "${CHROME:-/usr/bin/google-chrome}" 
     chk "browser: compat merged HTML filters + Export CSV ($(jq -r '.checks' <<<"$res" 2>/dev/null) checks) ${res:0:300}" test "$rc" -eq 0
     res="$(node "$HERE/browser_check.js" "$OUT/compat win/combined.html" 2>&1)"; rc=$?
     chk "browser: compat git-bash merged HTML ${res:0:300}" test "$rc" -eq 0
+fi
+
+echo "== v1.4.0: Aurora global databases"
+GR=(-P prod -r us-east-1,us-west-2,eu-west-1)
+t glob 0 global "${GR[@]}" -F json
+rowt glob orders-aurora-pg15 '.global_cluster == "orders-global" and .global_role == "primary" and (.pending_actions | test("system-update on global orders-global"))'
+rowt glob orders-dr-pg15 '.global_cluster == "orders-global" and .global_role == "secondary" and .compliance_status == "NON-COMPLIANT"'
+rowt glob shop-dr-mysql '.global_cluster == "shop-global" and .global_role == "secondary"'
+rowt glob inv-mysql '.global_cluster == "" and .global_role == ""'
+jqt glob '.summary.global_databases == 2 and .summary.global_members == 4'
+jqt glob '(.summary.globals[] | select(.global_cluster == "orders-global")) | .region_status_mismatch and .overall_status == "NON-COMPLIANT" and .not_scanned == 1 and .member_count == 2'
+jqt glob '(.summary.globals[] | select(.global_cluster == "shop-global")) | .region_status_mismatch | not'
+jqt glob '[.rows[] | select(has("upgrade_command"))] | length == 0'
+t globtxt 0 global "${GR[@]}" -F txt,csv,html -o "$OUT/glob"
+GT="$(find "$OUT/glob" -name '*[0-9].txt' | head -1)"; GH="$(find "$OUT/glob" -name '*.html' | head -1)"; GC="$(find "$OUT/glob" -name '*[0-9].csv' | head -1)"
+chk "glob txt: header + section + mismatch" bash -c "grep -q 'Global databases : 2 (4 members)' '$GT' && grep -q '^GLOBAL DATABASES' '$GT' && grep -q 'region status mismatch' '$GT'"
+chk "glob csv: global_cluster/global_role last" bash -c "head -1 '$GC' | grep -q '\"global_cluster\",\"global_role\"\$'"
+chk "glob: no ARN / command / tags / notes in txt csv html" bash -c "! grep -lE 'arn:aws|modify-db|modify-global|tag:|\"note\"|Copy</button>' '$GT' '$GC' '$GH'"
+chk "glob html: dropdown + section" bash -c "grep -q 'id=\"f-global\"' '$GH' && grep -q 'Not global' '$GH' && grep -q 'id=\"globals\"' '$GH'"
+MOCK_GLOBAL_DENY=1 t globdeny 0 global "${GR[@]}" -F json
+has globdeny err 'WARN.*describe-global-clusters failed.*AccessDenied'
+rowt globdeny orders-aurora-pg15 '.global_cluster == null and .global_role == "unknown" and .compliance_status == "COMPLIANT"'
+rowt globdeny inv-mysql '.global_role == ""'
+jqt globdeny '.summary.errors == 0 and .summary.global_unknown > 0'
+GD="$OUT/glob data"; mkdir -p "$GD"
+MOCK_SCENARIO=global "$SCRIPT" "${GR[@]}" --save-data "$GD/new.json" -o "$OUT/gsx" -F json >/dev/null 2>&1
+cp "$HERE"/fixtures/v130/*summary_v130.json "$GD/"
+chk "save-data: schema 1.1 with globals" jq -e '.schema_version == 1 and .schema_minor == 1 and (.globals | length) == 2 and .global_lookup[0].status == "ok"' "$GD/new.json"
+mg gmerge 0 --merge "$GD" -F json
+jqt gmerge '.summary.global_databases == 2 and (.meta.global_lookup | map(select(.status == "unknown")) | length) >= 1'
+jqt gmerge '[.rows[] | select(.account_id != "111111111111" and (.resource_type | test("aurora-cluster"))) | .global_role] | all(. == "unknown")'
+jqt gmerge '.meta.tag_columns == []'
+t gtag 0 fleet -P prod -r us-east-1 -T Owner -F csv -o "$OUT/gtag"
+has gtag err 'ignored since v1.4.0'; chk "gtag: no tag column" bash -c "! grep -rq 'tag:' '$OUT/gtag'"
+if command -v node >/dev/null 2>&1 && [[ -x "${CHROME:-/usr/bin/google-chrome}" ]] && NODE_PATH="${NODE_PATH:-}" node -e 'require("puppeteer-core")' 2>/dev/null; then
+    res="$(node "$HERE/browser_global.js" "$GH" ${SHOTS:+"$SHOTS"} 2>&1)"; rc=$?
+    chk "browser: Global cluster dropdown ${res:0:300}" test "$rc" -eq 0
 fi
 
 echo "== hygiene"

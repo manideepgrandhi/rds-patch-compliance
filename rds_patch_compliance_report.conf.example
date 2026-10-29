@@ -20,7 +20,7 @@ warn_days = 180             # flag majors whose standard support ends within 180
 # fail_on_noncompliant = no  # yes = exit 5 when anything is NON-COMPLIANT
 
 # --- report
-tag_columns = Environment,Owner,Application
+# tag_columns: ignored since v1.4.0 (tag columns are no longer shown)
 formats = csv,html,txt
 output_dir = ~/compliance-reports
 prefix = rds_patch_compliance

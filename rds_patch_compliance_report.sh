@@ -17,7 +17,7 @@ set -Eeuo pipefail
 umask 077
 
 readonly SCRIPT_NAME="${0##*/}"
-readonly SCRIPT_VERSION="1.3.2"
+readonly SCRIPT_VERSION="1.4.0"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly SCRIPT_DIR
 LIB="${RDS_PCR_LIB:-$SCRIPT_DIR/lib}/compliance.jq"
@@ -36,7 +36,8 @@ DISCOVER=1
 PROBE_PARALLEL=8
 ENGINES=()
 IDENTIFIERS=()
-TAG_COLUMNS=(Environment Owner Application)
+TAG_COLUMNS=()   # tag columns are no longer shown (v1.4.0); -T / tag_columns are accepted and ignored
+TAG_IGNORED=0
 FORMATS=()
 FORMATS_SET=0
 OUTPUT_DIR=""
@@ -125,7 +126,6 @@ Compliance:
       --fail-on-noncompliant  Exit 5 when any NON-COMPLIANT server is found (default: exit 0)
 
 Report:
-  -T, --tag-columns LIST    Tag keys shown as columns (default: Environment,Owner,Application; '' = none)
   -F, --format LIST         text,csv,json,html (default: text). Several formats need -o
   -o, --output-dir DIR      Write <prefix>[_<account>]_YYYYmmdd_HHMMSS.<ext> files into DIR (the account number
                             is in the name when one account was scanned). With --merge, -o FILE.html names the file
@@ -161,8 +161,9 @@ Behaviour:
   -v, --verbose             Debug logging
   -h, --help / -V, --version
 
-Printed per row (NEVER run): upgrade_command = modify-db-cluster / modify-db-instance --engine-version
-<latest minor> without --apply-immediately (applies in the next maintenance window).
+Aurora global databases: one read-only rds describe-global-clusters per account (only when Aurora clusters are
+found); rows get global_cluster / global_role, the report a Global databases section. If the call fails the
+report still runs and those clusters show global "unknown".
 
 Exit codes: 0 report produced, 5 NON-COMPLIANT found (only with --fail-on-noncompliant), 1 usage,
             2 pre-check (aws/jq missing, no profile has valid credentials), 3 bad --merge input file,
@@ -210,7 +211,7 @@ load_config() {
             probe_parallel)         PROBE_PARALLEL="$val" ;;
             engine|engines)         ENGINES=(); add_list ENGINES "$val" ;;
             identifier|identifiers) IDENTIFIERS=(); add_list IDENTIFIERS "$val" ;;
-            tag_columns)            TAG_COLUMNS=(); add_list TAG_COLUMNS "$val" ;;
+            tag_columns)            TAG_IGNORED=1 ;;
             format|formats)         FORMATS=(); add_list FORMATS "$val" ;;
             output_dir)             OUTPUT_DIR="${val/#\~/$HOME}" ;;
             prefix)                 PREFIX="$val" ;;
@@ -261,7 +262,7 @@ parse_args() {
             --probe-parallel)   need_arg "$opt" $#; PROBE_PARALLEL="$2"; shift 2 ;;
             -e|--engine)        need_arg "$opt" $#; reset_once ENGINES; add_list ENGINES "$2"; shift 2 ;;
             -i|--identifier)    need_arg "$opt" $#; reset_once IDENTIFIERS; add_list IDENTIFIERS "$2"; shift 2 ;;
-            -T|--tag-columns)   need_arg "$opt" $#; TAG_COLUMNS=(); add_list TAG_COLUMNS "$2"; shift 2 ;;
+            -T|--tag-columns)   need_arg "$opt" $#; TAG_IGNORED=1; shift 2 ;;
             -F|--format)        need_arg "$opt" $#; reset_once FORMATS; add_list FORMATS "$2"; FORMATS_SET=1; shift 2 ;;
             -o|--output-dir)    need_arg "$opt" $#; OUTPUT_DIR="$2"; shift 2 ;;
             --prefix)           need_arg "$opt" $#; PREFIX="$2"; shift 2 ;;
@@ -298,6 +299,7 @@ parse_args() {
 }
 
 validate() {
+    (( TAG_IGNORED )) && log_warn "-T / tag_columns is ignored since v1.4.0: tag columns are no longer shown (tags stay in --save-data / JSON)"
     command -v jq >/dev/null 2>&1 || die 2 "jq not found in PATH (install jq 1.6+)"
     local x
     if (( ! ${#FORMATS[@]} )); then if (( MERGE )); then FORMATS=(html); else FORMATS=(text); fi; fi   # --merge defaults to html
@@ -630,7 +632,33 @@ collect_profile() {   # collect_profile <index> <profile>
         if [[ "$st" == empty ]]; then log_debug "[${profile:-default}/$region] discovery: no DB instance or cluster; skipped"; continue; fi
         collect_region "$profile" "$account" "$region" "$WORK/p$idx/$region"
     done
+    collect_globals "$idx" "$profile" "$account" "$base"
     return 0
+}
+# Aurora global databases: one describe-global-clusters per account (global clusters are account-wide; any region
+# answers). Only when an Aurora cluster was found. A failure is a warning, not an AWS error: affected rows show "unknown".
+collect_globals() {   # collect_globals <index> <profile> <account> <region>
+    local d="$WORK/p$1" st="ok" msg="" n=0
+    if ! find "$d" -name rows.json -type f -exec jq -e 'any(.[]; .resource_type == "aurora-cluster")' {} \; 2>/dev/null | grep -q true; then
+        st="not-needed"
+    else
+        AWS_SOFT=1
+        if aws_call "$d/r_globals.json" "$2" "$4" rds describe-global-clusters; then
+            jq -c --arg a "$3" '(.GlobalClusters // [])[] | {account: $a, id: .GlobalClusterIdentifier, arn: .GlobalClusterArn, engine: (.Engine // ""),
+                version: (.EngineVersion // ""), status: (.Status // ""),
+                members: [(.GlobalClusterMembers // [])[] | {arn: .DBClusterArn, region: (.DBClusterArn | split(":")[3]),
+                          cluster: (.DBClusterArn | split(":")[-1]), role: (if .IsWriter then "primary" else "secondary" end)}]}' \
+                "$d/r_globals.json" | unix_eol >>"$WORK/globals.jsonl"
+            n="$(jq '.GlobalClusters // [] | length' "$d/r_globals.json" | tr -d '\r')"
+            log_info "[${2:-default}] $n Aurora global database(s)"
+        else
+            st="error"; msg="$LAST_ERR"
+            log_warn "[${2:-default}/$4] rds describe-global-clusters failed: $msg (Aurora clusters show global database \"unknown\")"
+        fi
+        AWS_SOFT=0
+    fi
+    jq -cn --arg a "$3" --arg p "${2:-default}" --arg r "$4" --arg s "$st" --arg m "$msg" --argjson n "$n" \
+        '{account: $a, profile: $p, region: $r, status: $s, message: $m, count: $n}' >>"$WORK/global_lookup.jsonl"
 }
 
 # ----------------------------------------------------------------------------
@@ -644,11 +672,14 @@ build_report() {
     if [[ -s "$WORK/errors.jsonl" ]]; then jq -cs . "$WORK/errors.jsonl" >"$WORK/all_errors.json"; else printf '[]' >"$WORK/all_errors.json"; fi
     : >"$WORK/accounts.jsonl"
     [[ -f "$WORK/region_status.jsonl" ]] || : >"$WORK/region_status.jsonl"
+    [[ -f "$WORK/globals.jsonl" ]] || : >"$WORK/globals.jsonl"
+    [[ -f "$WORK/global_lookup.jsonl" ]] || : >"$WORK/global_lookup.jsonl"
     if (( ${#ACCOUNTS_JSON[@]} )); then printf '%s\n' "${ACCOUNTS_JSON[@]}" >"$WORK/accounts.jsonl"; fi
     jq -n --arg script "$SCRIPT_NAME" --arg version "$SCRIPT_VERSION" \
         --arg gu "$(date -u -d "@$NOW" '+%Y-%m-%d %H:%M UTC')" --arg gl "$(TZ="$DISPLAY_TZ" date -d "@$NOW" '+%Y-%m-%d %H:%M %Z')" \
         --arg tz "$DISPLAY_TZ" --arg host "$(hostname 2>/dev/null || echo unknown)" \
         --slurpfile accounts "$WORK/accounts.jsonl" --slurpfile rstat "$WORK/region_status.jsonl" \
+        --slurpfile globals "$WORK/globals.jsonl" --slurpfile glookup "$WORK/global_lookup.jsonl" \
         --arg rmode "$REGION_MODE" --argjson pp "$PROBE_PARALLEL" \
         --argjson regions "$(json_array "${ALL_REGIONS_SEEN[@]}" | jq -c 'unique')" --argjson tagcols "$(json_array "${TAG_COLUMNS[@]}")" \
         --argjson mb "$MAX_BEHIND" --argjson warn "$WARN_DAYS" --arg ft "$(filters_text)" --argjson f "$FILTERS_JSON" \
@@ -657,7 +688,7 @@ build_report() {
         '{script: $script, version: $version, generated_utc: $gu, generated_local: $gl, tz: $tz, host: $host,
           accounts: $accounts, regions: $regions, tag_columns: $tagcols, max_behind: $mb, warn_days: $warn,
           filters: $f, filters_text: $ft,
-          region_discovery: {mode: $rmode, probe_parallel: (if $rmode == "discover" then $pp else null end)}, region_status: $rstat, aws_calls: $calls, aws_failures: $fails, lifecycle_api: ($lcu == 0), oracle_any_patch_line: $oal}' >"$WORK/meta.json" || die 4 "Building report metadata failed"
+          region_discovery: {mode: $rmode, probe_parallel: (if $rmode == "discover" then $pp else null end)}, region_status: $rstat, globals: $globals, global_lookup: $glookup, aws_calls: $calls, aws_failures: $fails, lifecycle_api: ($lcu == 0), oracle_any_patch_line: $oal}' >"$WORK/meta.json" || die 4 "Building report metadata failed"
     REPORT="$WORK/report.json"
     jq -n --slurpfile meta "$WORK/meta.json" --slurpfile rows "$WORK/all_rows.json" --slurpfile errors "$WORK/all_errors.json" \
         '{meta: $meta[0], rows: $rows[0], errors: $errors[0]}' >"$WORK/raw_report.json" || die 4 "Assembling the report failed"
@@ -786,6 +817,7 @@ dry_run_plan() {
             printf '    %s\n' "$(printf '%q ' "${AWS_CMD[@]}" rds describe-db-engine-versions --engine "<engine>" --engine-version "<current>") (once per engine+version+region; docdb / neptune CLI for those)"
             printf '    %s\n' "$(printf '%q ' "${AWS_CMD[@]}" rds describe-db-major-engine-versions --engine "<engine>") (once per RDS engine+region)"
         done
+        aws_base "$p" "$r"; printf '    %s\n' "$(printf '%q ' "${AWS_CMD[@]}" rds describe-global-clusters) (once per account, only when Aurora clusters are found)"
     done
 }
 
@@ -815,7 +847,7 @@ save_data() {   # raw, unfiltered-by-display data: one file per account by defau
            --argjson now "$NOW" --arg utc "$utc" --arg tz "$DISPLAY_TZ" --arg abbr "$abbr" --argjson off "$off" --arg acct "$2" '
           def mine: $acct == "" or . == $acct;
           .meta as $m
-          | {schema: $schema, schema_version: $sv, script_version: $version, collected_epoch: $now, collected_at: $utc,
+          | {schema: $schema, schema_version: $sv, schema_minor: 1, script_version: $version, collected_epoch: $now, collected_at: $utc,
              collected_utc: ($m.generated_utc), collected_local: ($m.generated_local), tz: $tz, tz_abbr: $abbr, tz_offset: $off,
              read_only: "describe calls + sts get-caller-identity only",
              accounts: [$m.accounts[] | select(.account | mine) | {account, profile, collected_epoch: $now, collected_at: $utc}],
@@ -823,6 +855,8 @@ save_data() {   # raw, unfiltered-by-display data: one file per account by defau
                         region_discovery: $m.region_discovery, lifecycle_api: $m.lifecycle_api, aws_calls: $m.aws_calls},
              regions: ([.rows[] | select(.account_id | mine) | .region] | unique),
              region_status: [($m.region_status // [])[] | select(.account | mine)],
+             globals: [($m.globals // [])[] | select(.account | mine)],
+             global_lookup: [($m.global_lookup // [])[] | select(.account | mine)],
              rows: [.rows[] | select(.account_id | mine)],
              errors: [.errors[] | select((.account | mine) or .account == "-" or .account == "")]}' \
            "$WORK/raw_report.json" | unix_eol >"$WORK/save.json" || die 4 "Building the data file failed"
@@ -926,7 +960,7 @@ merge_main() {
                 tz: $tz, host: $host,
                 accounts: [.accounts[] | . + {collected_local: (.collected_epoch | loc)}], regions: .regions, tag_columns: $tagcols,
                 max_behind: .max_behind, warn_days: $warn, filters: $f, filters_text: $ft,
-                region_discovery: {mode: "merge", probe_parallel: null}, region_status: .region_status, aws_calls: 0, aws_failures: 0,
+                region_discovery: {mode: "merge", probe_parallel: null}, region_status: .region_status, globals: .globals, global_lookup: .global_lookup, aws_calls: 0, aws_failures: 0,
                 lifecycle_api: .lifecycle_api, oracle_any_patch_line: .oracle_any_patch_line,
                 merge: {files: $n, basis: "merge time", sources: [.sources[] | . + {collected_local: (.collected_epoch | loc)}]}},
          rows: .rows, errors: .errors}' "$WORK/merged.json" | tr -d '\r' >"$WORK/raw_report.json" || die 4 "Assembling the merged report failed"

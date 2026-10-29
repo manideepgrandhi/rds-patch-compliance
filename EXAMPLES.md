@@ -31,9 +31,8 @@ All examples are read-only. Run them in AWS CloudShell (or anywhere with AWS CLI
 # 7. Gate in a pipeline / cron: exit 5 when anything is NON-COMPLIANT
 ./rds_patch_compliance_report.sh -P prod --all-regions --fail-on-noncompliant -F csv -o /var/reports || echo "rc=$?"
 
-# 8. Different tag columns, or none
-./rds_patch_compliance_report.sh -T Environment,CostCenter
-./rds_patch_compliance_report.sh -T ''
+# 8. Tags (no longer shown as columns since v1.4.0) from the JSON rows
+./rds_patch_compliance_report.sh -F json | jq -r '.rows[] | "\(.identifier) \(.tags.Environment // "-")"'
 
 # 9. Config file + one override (CLI wins)
 ./rds_patch_compliance_report.sh --config rds_patch_compliance_report.conf.example --max-behind 3
@@ -50,8 +49,8 @@ All examples are read-only. Run them in AWS CloudShell (or anywhere with AWS CLI
 # 13. Non-compliant servers as JSON lines
 ./rds_patch_compliance_report.sh -F json | jq -c '.rows[] | select(.compliance_status == "NON-COMPLIANT") | {identifier, engine, current_version, latest_minor_version, versions_behind}'
 
-# 14. All upgrade commands for one engine, to review (they are NOT run)
-./rds_patch_compliance_report.sh -e aurora-mysql -F json | jq -r '.rows[].upgrade_command | select(. != "")'
+# 14. Aurora global database members and their status (v1.4.0)
+./rds_patch_compliance_report.sh -A -F json | jq -r '.summary.globals[] | "\(.global_cluster) \(.overall_status)\(if .region_status_mismatch then " (region status mismatch)" else "" end)", (.members[] | "  \(.role) \(.region) \(.identifier) \(.current_version // "-") \(.compliance_status)")'
 
 # 15. Pending maintenance per server, readable
 ./rds_patch_compliance_report.sh -F json | jq -r '.rows[] | select(.pending_actions_count > 0) | "\(.identifier): \(.pending_actions)"'

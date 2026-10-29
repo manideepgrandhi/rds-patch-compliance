@@ -6,6 +6,11 @@ Lifecycle dates are relative to now. Env:
   MOCK_SCENARIO = fleet (default) | empty | lookupfail | nolc | lcfail | accessdenied | badcreds | large | oracle
   MOCK_LARGE_N  = instances for 'large' (default 3000) ; MOCK_LOG = JSONL of argv
   MOCK_DEFAULT_REGION = answer for `aws configure get region`
+  MOCK_SCENARIO=global: the prod fleet plus Aurora global databases: orders-global (aurora-postgresql, primary
+                orders-aurora-pg15 us-east-1, headless secondary orders-dr-pg15 us-west-2 whose 15.8 has one more valid
+                target there = region status mismatch, member orders-dr-tokyo in ap-northeast-1 not scanned) and
+                shop-global (aurora-mysql, primary shop-aurora-mysql us-east-1, secondary shop-dr-mysql eu-west-1);
+                a pending action on the orders-global ARN. MOCK_GLOBAL_DENY=1: describe-global-clusters AccessDenied
   MOCK_SCENARIO=discover: 14 enabled regions; prod also has a cluster-only region (us-west-2: a headless Aurora
                 cluster, no instances) and ca-central-1 denies rds:DescribeDBInstances (SCP); the rest are empty
   MOCK_PROBE_DELAY = seconds each discovery probe (--query length(...)) sleeps; MOCK_TIMING = JSONL of
@@ -44,7 +49,7 @@ if argv[:3] == ["configure", "get", "region"]:
 GLOBAL_VAL = {"--output", "--profile", "--region", "--cli-connect-timeout", "--cli-read-timeout"}
 ALLOWED = {("sts", "get-caller-identity"): set(), ("ec2", "describe-regions"): set(),
            ("rds", "describe-db-clusters"): {"--max-records", "--query"}, ("rds", "describe-db-instances"): {"--max-records", "--query"},
-           ("rds", "describe-pending-maintenance-actions"): set(),
+           ("rds", "describe-pending-maintenance-actions"): set(), ("rds", "describe-global-clusters"): set(),
            ("rds", "describe-db-engine-versions"): {"--engine", "--engine-version"}, ("docdb", "describe-db-engine-versions"): {"--engine", "--engine-version"},
            ("neptune", "describe-db-engine-versions"): {"--engine", "--engine-version"},
            ("rds", "describe-db-major-engine-versions"): {"--engine"}}
@@ -175,6 +180,8 @@ if SCEN == "oracle":
     })
 
 def targets(eng, v, major):
+    if SCEN == "global" and REGION == "us-west-2" and (eng, v) == ("aurora-postgresql", "15.8"):
+        return TGT[(eng, v)] + [("15.13", False, False)]   # one more valid target in this region
     if (eng, v) in TGT:
         return TGT[(eng, v)]
     fam = [x for x, mj in CAT.get(eng, []) if (mj or x.rsplit(".", 2)[0]) == (major or v.rsplit(".", 2)[0])]
@@ -316,6 +323,10 @@ elif SCEN != "empty" and REGION == "us-east-1" and PROFILE in ("", "prod"):
     pma(arn("db", "catalog-docdb-2"), [("system-update", "Upgrades to the DocumentDB engine", 30, 60, None)])
     cluster("graph-neptune", "neptune", "1.3.2.1", ["graph-neptune-1"], tags("prod", "graph", "recs"))
     inst("unrelated-redis-like", "custom-sqlserver-ee", "15.00.4073.23.cev1", tg=[])  # out of scope engine: ignored
+elif SCEN == "global" and REGION == "us-west-2" and PROFILE in ("", "prod"):
+    cluster("orders-dr-pg15", "aurora-postgresql", "15.8", [], tags("dr", "orders", "orders"))   # headless secondary
+elif SCEN == "global" and REGION == "eu-west-1" and PROFILE in ("", "prod"):
+    cluster("shop-dr-mysql", "aurora-mysql", AMY % "3.05.2", ["shop-dr-mysql-1"], tags("dr", "shop", "storefront"))
 elif SCEN == "discover" and REGION == "us-west-2" and PROFILE in ("", "prod"):
     # cluster-only region: an Aurora global-database secondary with no instances (headless)
     cluster("dr-aurora-pg15", "aurora-postgresql", "15.10", [], tags("dr", "orders", "orders-dr"))
@@ -328,6 +339,24 @@ elif SCEN != "empty" and REGION == "ap-south-1" and PROFILE == "nonprod":
     inst("qa-pg", "postgres", "17.4", tg=tags("qa", "platform", "qa"))
     inst("dev-mariadb", "mariadb", "10.11.9", tg=tags("dev", "platform", "dev"))
 
+if OP == "describe-global-clusters":
+    if os.environ.get("MOCK_GLOBAL_DENY"):
+        fail("AccessDenied", "DescribeGlobalClusters", "User is not authorized to perform: rds:DescribeGlobalClusters")
+    G = []
+    if SCEN == "global" and PROFILE in ("", "prod"):
+        def m(region, ident, w):
+            return {"DBClusterArn": "arn:aws:rds:%s:%s:cluster:%s" % (region, ACCT, ident), "Readers": [], "IsWriter": w,
+                    "GlobalWriteForwardingStatus": "disabled", "SynchronizationStatus": "connected"}
+        def g(ident, eng, ver, mem):
+            G.append({"GlobalClusterIdentifier": ident, "GlobalClusterResourceId": "cluster-" + ident, "Status": "available",
+                      "GlobalClusterArn": "arn:aws:rds::%s:global-cluster:%s" % (ACCT, ident), "Engine": eng, "EngineVersion": ver,
+                      "StorageEncrypted": True, "DeletionProtection": False, "GlobalClusterMembers": mem})
+        g("orders-global", "aurora-postgresql", "15.8", [m("us-east-1", "orders-aurora-pg15", True), m("us-west-2", "orders-dr-pg15", False),
+                                                          m("ap-northeast-1", "orders-dr-tokyo", False)])
+        g("shop-global", "aurora-mysql", AMY % "3.05.2", [m("us-east-1", "shop-aurora-mysql", True), m("eu-west-1", "shop-dr-mysql", False)])
+    out({"GlobalClusters": G})
+if SCEN == "global" and REGION == "us-east-1" and PROFILE in ("", "prod"):
+    pma("arn:aws:rds::%s:global-cluster:orders-global" % ACCT, [("system-update", "Aurora global database patch", 20, None, None)])
 if "--query" in o:   # discovery probe: one page (--max-records, CLI --no-paginate), JMESPath length(...)
     q, mr = o["--query"], o.get("--max-records", "100")
     if not mr.isdigit() or not 20 <= int(mr) <= 100:

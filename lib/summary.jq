@@ -7,8 +7,12 @@ def h: tostring | @html;
 def dash: if . == null or . == "" then "-" else tostring end;
 def pad($n): tostring | if length >= $n then . else . + (" " * ($n - length)) end;
 def rpad($n): tostring | if length >= $n then . else (" " * ($n - length)) + . end;
+# members of one Aurora global database are listed together (primary first), ordered by the group's worst member
+def gkey: if (.global_cluster // "") != "" then "\(.account_id)|\(.global_cluster)" else "\(.account_id)|\(.region)|\(.identifier)" end;
+def gtxt: if (.global_cluster // "") != "" then "\(.global_cluster) (\(.global_role))" elif .global_role == "unknown" then "unknown" else "" end;
 def nc_rows: [.rows[] | select(.compliance_status == "NON-COMPLIANT")]
-             | sort_by([-(.versions_behind // 0), (.identifier | ascii_downcase), .account_id, .region]);
+             | (reduce .[] as $x ({}; .[$x | gkey] = ([.[$x | gkey] // 0, ($x.versions_behind // 0)] | max))) as $gm
+             | sort_by([-($gm[gkey]), gkey, (if .global_role == "primary" then 0 else 1 end), -(.versions_behind // 0), (.identifier | ascii_downcase), .account_id, .region]);
 def unk_rows: [.rows[] | select(.compliance_status == "UNKNOWN")] | sort_by([(.identifier | ascii_downcase), .account_id, .region]);
 def why: if .deprecated_version then "current version not returned by RDS (deprecated / not offered in region)"
          else (.note | split("; ")[0] | if . == "" then "lookup failed" else . end) end;
@@ -43,6 +47,7 @@ def text:
       "Regions  : \($r | ro | region_line)",
       "",
       "OVERALL  : \($s.total) servers/clusters | COMPLIANT \($s.compliant) | NON-COMPLIANT \($s.non_compliant) | UNKNOWN \($s.unknown) | \($s.pct_compliant)% compliant",
+      "GLOBAL   : Global databases: \($s.global_databases // 0) (\($s.global_members // 0) members)" + (if ($s.global_unknown // 0) > 0 then "; \($s.global_unknown) Aurora cluster(s) global unknown (lookup failed / old data)" else "" end),
       "",
       "PER ACCOUNT",
       "  " + ("ACCOUNT" | pad(14)) + ("NAME" | pad(14)) + ("COLLECTED" | pad(22)) + ("REGIONS" | rpad(8)) + ("TOTAL" | rpad(6)) + ("COMPL" | rpad(7)) + ("NON-C" | rpad(7)) + ("UNKN" | rpad(6)) + ("%COMPL" | rpad(8)) + ("PEND" | rpad(6)),
@@ -68,9 +73,9 @@ def text:
         else "!!! NON-COMPLIANT SERVERS (\($nc | length)) - most behind first",
              ( ($nc | map(.region | length) | max) as $rw | ($nc | map(.engine | length) | max) as $gw | ($nc | map(.identifier | length) | max) as $iw
                | ($nc | map("\(.current_version) -> \(.latest_minor_version | dash)" | length) | max) as $vw
-               | ("   " + ("ACCOUNT" | pad(14)) + ("REGION" | pad($rw + 2)) + ("ENGINE" | pad($gw + 2)) + ("IDENTIFIER" | pad($iw + 2)) + ("CURRENT -> LATEST MINOR" | pad($vw + 2)) + "BEHIND  SUPPORT"),
+               | ("   " + ("ACCOUNT" | pad(14)) + ("REGION" | pad($rw + 2)) + ("ENGINE" | pad($gw + 2)) + ("IDENTIFIER" | pad($iw + 2)) + ("CURRENT -> LATEST MINOR" | pad($vw + 2)) + "BEHIND  SUPPORT  GLOBAL DB"),
                  ($nc[] | "!! " + (.account_id | pad(14)) + (.region | pad($rw + 2)) + (.engine | pad($gw + 2)) + (.identifier | pad($iw + 2))
-                          + ("\(.current_version) -> \(.latest_minor_version | dash)" | pad($vw + 2)) + (.versions_behind | rpad(6)) + "  " + .support_flag) ) end ),
+                          + ("\(.current_version) -> \(.latest_minor_version | dash)" | pad($vw + 2)) + (.versions_behind | rpad(6)) + "  " + (.support_flag | pad(7)) + "  " + gtxt) ) end ),
       ( if ($uk | length) > 0 then "", "UNKNOWN (\($uk | length))", ($uk[] | "?  \(.account_id)  \(.region)  \(.engine)  \(.identifier)  \(.current_version): \(why)") else empty end ),
       ( if $r | merged then "", "MERGED INPUTS (\($r.meta.merge.files))",
           ($r.meta.merge.sources[] | "   \(.file)  collected \(.collected_utc)  account(s) \((.used + .superseded) | join(", "))  \(src_state)") else empty end ),
@@ -102,11 +107,12 @@ def html:
   + card("Past standard support"; $s.past_standard_support; (if $s.past_standard_support > 0 then "bad" else "ok" end); "Extended Support charges")
   + card("Support ending"; $s.nearing_end_of_support; (if $s.nearing_end_of_support > 0 then "warn" else "ok" end); "within \($s.warn_days) days")
   + card("Auto minor upgrade off"; $s.auto_minor_off; (if $s.auto_minor_off > 0 then "warn" else "ok" end); "incl. mixed clusters")
+  + card("Global databases"; ($s.global_databases // 0); (if ($s.global_unknown // 0) > 0 then "unk" else "" end); "\($s.global_members // 0) members" + (if ($s.global_unknown // 0) > 0 then ", \($s.global_unknown) unknown" else "" end))
   + card("Pending maintenance"; $s.with_pending; (if $s.with_pending > 0 then "warn" else "ok" end); "servers with actions")
   + ($r | ro | card("Regions with databases"; "\(.with_databases) / \(.checked)"; (if .error > 0 then "bad" else "" end); "\(.empty) empty, \(.error) error(s)")) + "</div>"
   + (if ($nc | length) == 0 then "<div class=\"allok\">All servers compliant - no server is more than \($s.max_behind) minor versions behind.</div>"
-     else "<h2 class=\"bad\">Non-compliant servers (\($nc | length)) - most behind first</h2><table class=\"nc\"><tr><th>Account</th><th>Region</th><th>Engine</th><th>Identifier</th><th>Current &rarr; latest minor</th><th>Behind</th><th>Support</th></tr>"
-          + ($nc | map("<tr><td>\(.account_id | h)</td><td>\(.region | h)</td><td>\(.engine | h)</td><td><b>\(.identifier | h)</b></td><td class=\"mono\">\(.current_version | h) &rarr; \(.latest_minor_version | dash | h)</td><td class=\"n bad\">\(.versions_behind)</td><td>\(.support_flag | h)</td></tr>") | join("")) + "</table>" end)
+     else "<h2 class=\"bad\">Non-compliant servers (\($nc | length)) - most behind first</h2><table class=\"nc\"><tr><th>Account</th><th>Region</th><th>Engine</th><th>Identifier</th><th>Current &rarr; latest minor</th><th>Behind</th><th>Support</th><th>Global DB</th></tr>"
+          + ($nc | map("<tr><td>\(.account_id | h)</td><td>\(.region | h)</td><td>\(.engine | h)</td><td><b>\(.identifier | h)</b></td><td class=\"mono\">\(.current_version | h) &rarr; \(.latest_minor_version | dash | h)</td><td class=\"n bad\">\(.versions_behind)</td><td>\(.support_flag | h)</td><td>\(gtxt | h)</td></tr>") | join("")) + "</table>" end)
   + "<h2>Per account <span class=\"sub\">\($r.meta.accounts | length) account(s) &middot; click a header to sort</span></h2><table class=\"sortable\" id=\"accounts\"><thead><tr><th>Account</th><th>Name</th><th>Collected</th><th>Regions with DBs</th><th>Total</th><th>Compliant</th><th>Non-compliant</th><th>Unknown</th><th>% compliant</th><th>Pending maint.</th><th>Past standard support</th></tr></thead><tbody>"
   + ($r | acct_rows | map("<tr><td><b>\(.account_id | h)</b></td><td>\(.profile | dash | h)</td><td>\(.collected_utc | dash | h)\(if .source then "<br><span class=\"sub\">" + (.source | h) + "</span>" else "" end)</td><td class=\"n\">\(.regions_with_databases)</td><td class=\"n\">\(.total)</td><td class=\"n ok\">\(.compliant)</td><td class=\"n \(if .non_compliant > 0 then "bad" else "" end)\">\(.non_compliant)</td><td class=\"n\">\(.unknown)</td><td class=\"n \(.pct_compliant | pctc)\" data-s=\"\(.pct_compliant // -1)\">\(.pct_compliant | pct_txt)</td><td class=\"n \(if .with_pending > 0 then "warn" else "" end)\">\(.with_pending)</td><td class=\"n \(if .past_standard_support > 0 then "bad" else "" end)\">\(.past_standard_support)</td></tr>") | join("")) + "</tbody></table>"
   + "<h2>Per region <span class=\"sub\">\($r | ro | region_line | h) &middot; click a header to sort</span></h2><table class=\"sortable\"><thead><tr><th>Account</th><th>Region</th><th>Total</th><th>Compliant</th><th>Non-compliant</th><th>Unknown</th><th>% compliant</th><th>Pending maint.</th></tr></thead><tbody>"
@@ -128,8 +134,8 @@ def html:
   + "rs.forEach(function(r){b.appendChild(r);});});});});})();</script><footer>rds_patch_compliance_summary.sh v\($ARGS.named.version // "" | h) &middot; read-only; numbers from rds_patch_compliance_report.sh v\($r.meta.version | h)</footer></body></html>";
 
 def csv_nc:
-  (["account_id","profile","region","engine","identifier","resource_type","major_version","current_version","latest_minor_version","versions_behind","support_flag","auto_minor_upgrade","pending_actions_count"] | @csv),
-  (nc_rows[] | [.account_id, .profile, .region, .engine, .identifier, .resource_type, .major_version, .current_version, .latest_minor_version, .versions_behind, .support_flag, .auto_minor_upgrade, .pending_actions_count] | @csv);
+  (["account_id","profile","region","engine","identifier","resource_type","major_version","current_version","latest_minor_version","versions_behind","support_flag","auto_minor_upgrade","pending_actions_count","global_cluster","global_role"] | @csv),
+  (nc_rows[] | [.account_id, .profile, .region, .engine, .identifier, .resource_type, .major_version, .current_version, .latest_minor_version, .versions_behind, .support_flag, .auto_minor_upgrade, .pending_actions_count, .global_cluster, .global_role] | @csv);
 def csv_summary:
   .summary as $s
   | (["scope","engine","major","total","compliant","non_compliant","unknown","pct_compliant","latest_minor"] | @csv),
@@ -151,7 +157,7 @@ def alert: {summary: (.summary | {total, compliant, non_compliant, unknown, pct_
             regions: (ro | {checked, with_databases, empty, error}),
             accounts: [acct_rows[] | {account_id, profile, total, compliant, non_compliant, unknown, pct_compliant}],
             merged_files: (.meta.merge.files // null),
-            non_compliant: [nc_rows[] | {account_id, region, engine, identifier, current_version, latest_minor_version, versions_behind, support_flag}]};
+            non_compliant: [nc_rows[] | {account_id, region, engine, identifier, current_version, latest_minor_version, versions_behind, support_flag, global_cluster, global_role}]};
 
 if $mode == "text" then text elif $mode == "html" then html elif $mode == "csv_nc" then csv_nc
 elif $mode == "csv_summary" then csv_summary elif $mode == "csv_accounts" then csv_accounts elif $mode == "csv_regions" then csv_regions elif $mode == "alert" then alert else . end

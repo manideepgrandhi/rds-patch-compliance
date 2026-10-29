@@ -110,26 +110,9 @@ done
 echo "mock response shapes matching CLI skeleton: $shape_ok/$n_shapes"
 
 MOCK_SCENARIO=fleet PATH="$HERE/mock:$PATH" "$S" -P prod,nonprod -r us-east-1,ap-south-1 -F json 2>/dev/null >"$OUT/fleet.json"
-cpass=0; cfail=0; declare -A combo=()
-while IFS= read -r cmd; do
-    eval "set -- $cmd"
-    [[ "$1" == aws ]] || { echo "BAD COMMAND: $cmd"; cfail=$((cfail + 1)); continue; }
-    shift
-    [[ "$cmd" == *--apply-immediately* ]] && { echo "MUST NOT BE PRINTED: $cmd"; cfail=$((cfail + 1)); }
-    run_real "$@"
-    if [[ "$OUTP" == *"Could not connect to the endpoint URL"* ]]; then cpass=$((cpass + 1)); combo["$1 $2"]=1
-    else cfail=$((cfail + 1)); echo "FAIL ($RC): $cmd :: ${OUTP:0:300}"; fi
-done < <(jq -r '.rows[].upgrade_command | select(. != "")' "$OUT/fleet.json")
-for k in "rds modify-db-cluster" "rds modify-db-instance" "neptune modify-db-cluster"; do
-    [[ -n "${combo[$k]:-}" ]] || { echo "MISSING printed $k"; cfail=$((cfail + 1)); }
-done
-# docdb is up to date in the mock fleet: check its printed form separately
-run_real --output json --region us-east-1 docdb modify-db-cluster --db-cluster-identifier x --engine-version 5.0.0
-if [[ "$OUTP" == *"Could not connect"* ]]; then cpass=$((cpass + 1)); else echo "docdb modify-db-cluster form rejected"; cfail=$((cfail + 1)); fi
-run_real --output json --region us-east-1 rds modify-db-cluster --engine-version 16.10
-[[ "$OUTP" != *"Could not connect"* ]] || { echo "negative: missing identifier accepted"; cfail=$((cfail + 1)); }
-echo "printed upgrade commands accepted by real CLI: $cpass, rejected: $cfail ($(printf '%s\n' "${!combo[@]}" | sort | paste -sd';' -))"
-fail=$((fail + cfail))
+# v1.4.0: no upgrade / modify command is generated any more
+if jq -e '[.rows[] | select(has("upgrade_command"))] | length == 0' "$OUT/fleet.json" >/dev/null && ! grep -q "modify-db" "$OUT/fleet.json"; then echo "no upgrade commands printed: OK"
+else echo "upgrade command still printed"; fail=$((fail + 1)); fi
 
 python3 "$HERE/fake_rds_endpoint.py" "$OUT/fport" "$OUT/freq.jsonl" &
 FAKE=$!

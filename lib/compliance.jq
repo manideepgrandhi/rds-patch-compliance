@@ -40,8 +40,6 @@ def shift_win($mins):
 def svc_of: if . == "docdb" then "docdb" elif . == "neptune" then "neptune" else "rds" end;
 def in_scope: test("^(aurora-postgresql|aurora-mysql|postgres|mysql|mariadb|sqlserver-(ee|se|ex|web)|oracle-(ee|se2|ee-cdb|se2-cdb)|docdb|neptune)$");
 def tags_obj: [(.TagList // [])[] | {key: .Key, value: .Value}] | from_entries;
-def mk_cmd($words; $region; $profile):
-  ($words + ["--region", $region] + (if $profile != "" and $profile != "default" then ["--profile", $profile] else [] end)) | map(sq) | join(" ");
 
 # one pending maintenance action -> structured + readable ("on" = "cluster", "member <id>" or "" for an instance)
 def utc_day: if . == null or . == "" then null else tostring | .[0:10] end;
@@ -125,12 +123,11 @@ def rows:
          pending_actions_count: ($pend | length), pending_actions: ($pend | map(.text) | join("; ")), pending_actions_detail: $pend,
          maint_window_utc: $r.window, maint_window_ist: ($r.window | shift_win(330)),
          tags: $r.tags, arn: $r.arn,
-         upgrade_command: (if $known and ($behind // 0) > 0 then
-             mk_cmd(["aws", ($r.engine | svc_of)] + (if $r.kind == "cluster" then ["modify-db-cluster", "--db-cluster-identifier", $r.id] else ["modify-db-instance", "--db-instance-identifier", $r.id] end)
-                    + ["--engine-version", $latest]; $region; $profile) else "" end),
+         # Aurora global database pending actions (ResourceIdentifier = the global cluster ARN) seen in this region;
+         # finalize keeps only the ones of this cluster's global database (membership comes from describe-global-clusters)
+         global_pending_raw: (if $r.rtype == "aurora-cluster" then [ $pc | to_entries[] | select(.key | test(":global-cluster:")) | {garn: .key, d: .value} ] else [] end),
          note: ([ (if $ok | not then "version lookup failed: \($e.error // "unknown")" else empty end),
                   (if $deprecated then "current version not returned by describe-db-engine-versions (deprecated or not offered in \($region)); no valid upgrade targets known" else empty end),
-                  (if $known and ($behind // 0) > 0 then "upgrade applies in the next maintenance window (no --apply-immediately)" + (if $r.rtype == "aurora-cluster" then "; Aurora restarts all instances together" else "" end) else empty end),
                   ($sel.excluded[] | .reason),
                   (if $auto == "false" then "auto minor upgrade is off" elif $auto == "mixed" then "auto minor upgrade is off on some members" else empty end) ] | join("; "))} ];
 
@@ -182,9 +179,56 @@ def account_breakdown($regs):
          regions_with_databases: ([$regs[] | select(.account_id == $a.account and .status == "databases")] | length),
          errors: ([$r.errors[] | select(.account == $a.account)] | length)} + ($g | region_counts) ]
   | sort_by(.account_id);
+# ------------------------------------------------------------------ Aurora global databases
+# meta.globals: describe-global-clusters per account ({account, id, arn, engine, version, status, members[{arn, region, cluster, role}]});
+# meta.global_lookup: per account {account, profile, status: ok | error | not-needed | unknown, message}. Old data files have neither:
+# their Aurora clusters get global_role "unknown". Idempotent (global pending items are stripped before they are re-added).
+def annotate_globals:
+  . as $r
+  | ([($r.meta.global_lookup // [])[] | {key: .account, value: .status}] | from_entries) as $ls
+  | ([($r.meta.globals // [])[] | . as $g | .members[] | {key: .arn, value: {id: $g.id, garn: $g.arn, role: .role}}] | from_entries) as $gm
+  | .rows |= map(
+      if .resource_type != "aurora-cluster" then . + {global_cluster: "", global_role: "", global_arn: null}
+      elif ($ls[.account_id] // "unknown") as $st | ($st != "ok" and $st != "not-needed") then . + {global_cluster: null, global_role: "unknown", global_arn: null}
+      else ($gm[.arn] // {id: "", garn: null, role: ""}) as $m | . + {global_cluster: $m.id, global_role: $m.role, global_arn: $m.garn} end
+      | .pending_actions_detail |= map(select(.on | startswith("global ") | not))
+      | . as $x
+      | (if $x.global_arn then [ ($x.global_pending_raw // [])[] | select(.garn == $x.global_arn) | .d[] | pend_item("global " + $x.global_cluster) ] else [] end) as $gp
+      | .pending_actions_detail += $gp
+      | .pending_actions_count = (.pending_actions_detail | length) | .pending_actions = (.pending_actions_detail | map(.text) | join("; "))
+      | (if (.global_cluster // "") != "" then
+           .note = ([(.note | split("; ")[] | select(. != "" and (startswith("Aurora global database") | not)))]
+                    + ["Aurora global database \(.global_cluster) (\(.global_role)): automatic minor version upgrade does not apply to global database members"]
+                    + (if .engine == "aurora-mysql" then ["upgrade the secondary clusters first, then the primary, to the same version"
+                         + (if .global_role == "secondary" and .member_count == 0 then "; headless secondary: add an instance before a minor upgrade" else "" end)]
+                       else ["Aurora PostgreSQL: modify-global-cluster upgrades every member in one managed minor upgrade"] end) | join("; "))
+         elif .global_role == "unknown" then .note = ([(.note | split("; ")[] | select(. != "" and (startswith("global database membership") | not)))] + ["global database membership unknown"] | join("; "))
+         else . end));
+def global_summary:
+  . as $r
+  | ([($r.meta.globals // [])[] | {key: "\(.account)|\(.id)", value: .}] | from_entries) as $gi
+  | [ $r.rows[] | select((.global_cluster // "") != "") ] | group_by([.account_id, .global_cluster])
+  | map(. as $g | $gi["\($g[0].account_id)|\($g[0].global_cluster)"] as $meta
+      | ([$g[] | {account_id, region, identifier, role: .global_role, current_version, latest_minor_version, versions_behind, compliance_status,
+                  headless: (.member_count == 0), scanned: true}]
+         + [ ($meta.members // [])[] | . as $m | select([$g[] | select(.arn == $m.arn)] | length == 0)
+             | {account_id: $g[0].account_id, region, identifier: .cluster, role, current_version: null, latest_minor_version: null, versions_behind: null,
+                compliance_status: "NOT SCANNED", headless: null, scanned: false} ]
+         | sort_by([(if .role == "primary" then 0 else 1 end), .region])) as $mem
+      | ([$mem[] | select(.scanned)]) as $sc
+      | {account_id: $g[0].account_id, global_cluster: $g[0].global_cluster, engine: $g[0].engine, global_status: ($meta.status // null),
+         members: $mem, member_count: ($sc | length), not_scanned: ([$mem[] | select(.scanned | not)] | length),
+         overall_status: ($sc | map(.compliance_status) | sort_by(st_rank) | .[0]),
+         versions: ($sc | map(.current_version) | unique),
+         version_differs: (($sc | map(.current_version) | unique | length) > 1),
+         region_status_mismatch: ($sc | group_by(.current_version) | any(.[]; (map(.compliance_status) | unique | length) > 1)),
+         pending: ([$g[].pending_actions_detail[] | select(.on | startswith("global ")) | .text] | unique)})
+  | sort_by([(.overall_status | st_rank), .account_id, .global_cluster]);
 def finalize:
-  (.rows |= map(refresh_row))
+  (.rows |= map(refresh_row | del(.upgrade_command)))   # files saved before v1.4.0 carry upgrade_command
+  | annotate_globals
   | . as $r
+  | ($r | global_summary) as $gs
   | ($r | region_breakdown) as $regs
   | ($r.rows | map(select(($nc_only | not) or .compliance_status == "NON-COMPLIANT"))
              | sort_by([.engine, (.compliance_status | st_rank), -(.versions_behind // -1), (.identifier | ascii_downcase), .account_id, .region])) as $rows
@@ -201,6 +245,9 @@ def finalize:
              pending_by_action: ([$r.rows[].pending_actions_detail[].action] | group_by(.) | map({key: .[0], value: length}) | sort_by(-.value, .key) | from_entries),
              deprecated: ($r.rows | map(select(.deprecated_version)) | length),
              errors: ($r.errors | length),
+             globals: $gs, global_databases: ($gs | length), global_members: ([$gs[].member_count] | add // 0),
+             global_unknown: ($r.rows | map(select(.global_role == "unknown")) | length),
+             global_lookup: ($r.meta.global_lookup // []),
              regions: $regs,
              accounts: ($r | account_breakdown($regs)),
              regions_total: ({account_id: "ALL", profile: "", region: "All regions", status: "",
@@ -244,6 +291,7 @@ def text:
     "  Servers/clusters : \($s.total)   COMPLIANT \($s.compliant)   NON-COMPLIANT \($s.non_compliant)   UNKNOWN \($s.unknown)   -> \($s.pct_compliant)% compliant",
     "  Support          : \($s.past_standard_support) past standard support (Extended Support charges), \($s.nearing_end_of_support) ending within \($s.warn_days) days",
     "  Pending maint.   : " + (if $s.with_pending == 0 then "none" else ($s | pend_summary) + " (\($s.pending_total) action(s))" end),
+    "  Global databases : \($s.global_databases) (\($s.global_members) members)" + (if $s.global_unknown > 0 then "; \($s.global_unknown) Aurora cluster(s) with unknown membership" else "" end),
     "  Other flags      : auto minor upgrade off \($s.auto_minor_off), current version not returned / deprecated \($s.deprecated)",
     (if $s.errors > 0 then "  AWS errors       : \($s.errors) (see ERRORS at the end; affected regions may be missing)" else empty end),
     "",
@@ -253,6 +301,10 @@ def text:
        + ((.latest_minor // "") | if contains("; ") then "\n" + (split("; ") | map("        latest minor, " + .) | join("\n")) else "" end)),
     ($s.engines[] | "  " + (.engine | pad($ew)) + ("all" | pad(10)) + (.total | rpad(6)) + (.compliant | rpad(7)) + (.non_compliant | rpad(7)) + (.unknown | rpad(6)) + "  \(.pct_compliant)% compliant"),
     "",
+    (if $s.global_databases > 0 then "GLOBAL DATABASES",
+       ($s.globals[] | "  \(.global_cluster) [\(.engine)] account \(.account_id): \(.overall_status)" + (if .region_status_mismatch then "  ** region status mismatch **" else "" end) + (if .version_differs then "  (versions differ: \(.versions | join(", ")))" else "" end),
+         (.members[] | "      " + (.role | pad(10)) + (.region | pad(16)) + (.identifier | pad(32)) + (.current_version | dash | pad($vw)) + (.compliance_status) + (if .headless then " (headless)" else "" end) + (if .versions_behind != null then ", \(.versions_behind) behind" else "" end)),
+         (.pending[] | "      pending: " + .)), "" else empty end),
     "PER REGION",
     "  " + ("ACCOUNT" | pad(14)) + ("REGION" | pad(16)) + ("STATUS" | pad(11)) + ("TOTAL" | rpad(6)) + ("COMPL" | rpad(7)) + ("NON-C" | rpad(7)) + ("UNKN" | rpad(6)) + ("%COMPL" | rpad(8)) + ("PEND" | rpad(6)) + ("PAST-STD" | rpad(10)),
     (($r | shown_regions) + [$s.regions_total] | .[] | "  " + (.account_id | pad(14)) + (.region | pad(16)) + (.status | pad(11)) + (.total | rpad(6)) + (.compliant | rpad(7)) + (.non_compliant | rpad(7)) + (.unknown | rpad(6))
@@ -280,7 +332,8 @@ def text:
     "  Source  : ValidUpgradeTarget (IsMajorVersionUpgrade=false) of describe-db-engine-versions --engine-version <current>, per server; latest minor per major = highest valid target seen.",
     "  Regions : \($ro | region_mode_txt); empty regions are only counted; PER REGION lists regions with databases or an AWS error.",
     "  Pending : maintenance actions AWS scheduled or offered and not yet applied (clusters include member actions).",
-    "  Read-only: nothing was changed; upgrade commands (printed only, never run) are in the CSV / HTML / JSON output.";
+    "  Globals : Aurora global databases from describe-global-clusters; overall = worst member; mismatch = same version, different status across regions.",
+    "  Read-only: nothing was changed.";
 
 # ------------------------------------------------------------------ csv / json
 def cols: ["account_id","profile","region","resource_type","identifier","members","engine","major_version","current_version","latest_minor_version",
@@ -288,9 +341,9 @@ def cols: ["account_id","profile","region","resource_type","identifier","members
            "pending_actions_count","pending_actions","deprecated_version","maint_window_utc","maint_window_ist"];
 def csv:
   . as $r
-  | (cols + ($tagcols | map("tag:" + .)) + ["arn","upgrade_command","note","next_maintenance","days_until_maintenance"] | @csv),
+  | (cols + ["next_maintenance","days_until_maintenance","global_cluster","global_role"] | @csv),
     ($r.rows[] | . as $x | ([cols[] | $x[.]] | map(if type == "array" then join(" ") elif . == null then "" else . end))
-       + ($tagcols | map($x.tags[.] // "")) + [$x.arn, $x.upgrade_command, $x.note, ($x.next_maintenance // ""), ($x.days_until_maintenance // "")] | @csv);
+       + [($x.next_maintenance // ""), ($x.days_until_maintenance // ""), ($x.global_cluster // ""), ($x.global_role // "")] | @csv);
 def csv_regions:
   [["account_id","account_id"],["profile","profile"],["region","region"],["status","status"],["total","total"],["compliant","compliant"],
    ["non_compliant","non_compliant"],["unknown","unknown"],["pct_compliant","pct_compliant"],["servers_with_pending_maintenance","with_pending"],
@@ -305,11 +358,13 @@ def stc: {"COMPLIANT": "ok", "NON-COMPLIANT": "bad", "UNKNOWN": "unk"}[.] // "un
 def sfc: if startswith("past") then "bad" elif startswith("standard support ends") then "warn" elif . == "ok" then "ok" else "muted" end;
 def card($label; $val; $cls; $sub): "<div class=\"card \($cls)\" data-k=\"\($label | ascii_downcase | gsub("[^a-z]+"; "-"))\"><div class=\"v\">\($val | h)</div><div class=\"l\">\($label | h)</div><div class=\"s\">\($sub | h)</div></div>";
 def dleft: if . == null then "" elif . < 0 then "\(-.) day(s) overdue" elif . == 0 then "today" else "in \(.) day(s)" end;
+def gbadge: if .global_role == "unknown" then " <span class=\"gb unk\" title=\"describe-global-clusters unavailable for this account\">global: unknown</span>"
+  elif (.global_cluster // "") != "" then " <span class=\"gb\" title=\"Aurora global database\">global: \(.global_cluster | h) &middot; \(.global_role | h)\(if .member_count == 0 then " (headless)" else "" end)</span>" else "" end;
 def html_row:
   . as $x
   | "<tr data-i=\"\(._i)\"><td><span class=\"st \(.compliance_status | stc)\">\(.compliance_status)</span></td><td data-s=\"\(.versions_behind // -1)\">\(.versions_behind | dash)</td>"
-  + "<td><b>\(.identifier | h)</b>" + (if .members != "" then "<div class=\"sub\">\(.members | h)</div>" else "" end) + "</td>"
-  + "<td>\(.resource_type | h)</td><td>\(.major_version | h)</td><td class=\"mono\">\(.current_version | h)</td><td class=\"mono\">\(.latest_minor_version | dash | h)</td>"
+  + "<td><b>\(.identifier | h)</b>" + gbadge + (if .members != "" then "<div class=\"sub\">\(.members | h)</div>" else "" end) + "</td>"
+  + "<td>\(.resource_type | h)</td><td>\(.major_version | h)</td><td class=\"mono\">\(.current_version | h)\(if .deprecated_version then " <span class=\"st bad\">DEPRECATED</span>" else "" end)</td><td class=\"mono\">\(.latest_minor_version | dash | h)</td>"
   + "<td class=\"mono small\">\(.newer_versions | short_list | h)</td><td class=\"mono small\">\(.default_auto_upgrade_target | dash | h)</td>"
   + "<td class=\"\(if .auto_minor_upgrade == "true" then "ok" elif .auto_minor_upgrade == "unknown" then "muted" else "warn" end)\">\(.auto_minor_upgrade | h)</td>"
   + "<td>\(.standard_support_end | dash | h)</td><td>\(.extended_support_end | dash | h)</td><td class=\"\(.support_flag | sfc)\">\(.support_flag | h)</td>"
@@ -319,9 +374,7 @@ def html_row:
                 + (if .forced_apply_ist then "<div class=\"sub\">forced \(.forced_apply_utc | h) = \(.forced_apply_ist | h)</div>" else "" end) + "</li>") | join("")) + "</ul></details>"
             + (if .days_until_maintenance != null then "<div class=\"sub \(if .days_until_maintenance < 0 then "bad" elif .days_until_maintenance <= 14 then "warn" else "" end)\">next \(.next_maintenance) &middot; \(.days_until_maintenance | dleft)</div>" else "" end) end) + "</td><td class=\"small\">\(.maint_window_utc | dash | h) UTC<br>\(.maint_window_ist | dash | h) IST</td>"
   + "<td>\(.account_id | h)<div class=\"sub\">\(.profile | h) &middot; \(.region | h)</div></td>"
-  + ($tagcols | map("<td>\($x.tags[.] // "" | h)</td>") | join(""))
-  + "<td class=\"cmd\">" + (if .upgrade_command != "" then "<code>\(.upgrade_command | h)</code><button class=\"cp\">Copy</button>" else "-" end) + "</td>"
-  + "<td class=\"small\">\(.note | h)" + (if .deprecated_version then " <span class=\"st bad\">DEPRECATED</span>" else "" end) + "<div class=\"sub mono\">\(.arn | h)</div></td></tr>";
+  + "</tr>";
 def rgc: {"databases": "db", "error": "bad", "empty": "unk"}[.] // "unk";
 def pctc: if . == null then "muted" elif . >= 100 then "ok" elif . >= 80 then "warn" else "bad" end;
 def region_tr($foot):
@@ -356,12 +409,25 @@ def html_sources($r):
   + "<table class=\"sources\"><thead><tr><th>File</th><th>Collected</th><th>Accounts used</th><th>Accounts ignored (newer file exists)</th><th>Script</th></tr></thead><tbody>"
   + ($r.meta.merge.sources | map("<tr><td class=\"mono small\">\(.file | h)</td><td class=\"small\">\(.collected_utc | h)<div class=\"sub\">\(.collected_local // "" | h)</div></td><td>\(.used | join(", ") | dash | h)</td><td class=\"muted\">\(.superseded | join(", ") | dash | h)</td><td class=\"small\">v\(.script_version | h)</td></tr>") | join(""))
   + "</tbody></table></section>" end;
+def html_globals($s):
+  if $s.global_databases == 0 then "" else
+  "<section id=\"globals\"><h3>Global databases <span class=\"muted\">\($s.global_databases) &middot; \($s.global_members) members &middot; overall = worst member</span></h3>"
+  + "<table class=\"globals\" id=\"globals\"><thead><tr><th>Global DB</th><th>Account</th><th>Engine</th><th>Overall</th><th>Role</th><th>Region</th><th>Cluster</th><th>Version</th><th>Status</th><th>Flags</th></tr></thead><tbody>"
+  + ([$s.globals[] | . as $g | (.members | length) as $n | .members | to_entries[] | .key as $k | .value
+      | "<tr data-g=\"\($g.global_cluster | h)\">" + (if $k == 0 then "<td rowspan=\"\($n)\"><b>\($g.global_cluster | h)</b></td><td rowspan=\"\($n)\">\($g.account_id | h)</td><td rowspan=\"\($n)\">\($g.engine | h)</td><td rowspan=\"\($n)\"><span class=\"st \($g.overall_status | stc)\">\($g.overall_status | h)</span></td>" else "" end)
+        + "<td>\(.role | h)</td><td>\(.region | h)</td><td>\(.identifier | h)\(if .headless then " <span class=\"muted\">(headless)</span>" else "" end)</td><td class=\"mono\">\(.current_version | dash | h)</td>"
+        + "<td><span class=\"st \(.compliance_status | stc)\">\(.compliance_status | h)</span>\(if .versions_behind != null then "<div class=\"sub\">\(.versions_behind) behind</div>" else "" end)</td>"
+        + (if $k == 0 then "<td rowspan=\"\($n)\" class=\"small\">" + ([ (if $g.region_status_mismatch then "<span class=\"st bad\">region status mismatch</span>" else empty end),
+              (if $g.version_differs then "versions differ: \($g.versions | join(", ") | h)" else empty end),
+              (if $g.not_scanned > 0 then "\($g.not_scanned) member(s) not scanned" else empty end),
+              ($g.pending[] | "pending: " + (. | h)) ] | if length == 0 then "-" else join("<br>") end) + "</td>" else "" end) + "</tr>"] | join(""))
+  + "</tbody></table></section>" end;
 def page_data($r):
-  {cols: (cols + ($tagcols | map("tag:" + .)) + ["arn","upgrade_command","note","next_maintenance","days_until_maintenance"]), tagcols: $tagcols,
+  {cols: (cols + ["next_maintenance","days_until_maintenance","global_cluster","global_role"]),
    csv_acct: (if ($r.meta.accounts | length) == 1 then $r.meta.accounts[0].account else "" end), csv_stamp: ($r.meta.generated_utc | gsub("[^0-9]"; "") | .[0:12]),
    nc_only: $nc_only,
    accounts: [$r.meta.accounts[] | {account, profile}],
-   rows: [$r.rows[] | del(.pending_actions_detail, .excluded_targets, .version_warnings)]}
+   rows: [$r.rows[] | del(.pending_actions_detail, .excluded_targets, .version_warnings, .tags, .arn, .note, .global_arn, .global_pending_raw, .upgrade_command)]}
   | tojson | gsub("<"; "\\u003c") | gsub("\u2028"; "\\u2028") | gsub("\u2029"; "\\u2029");
 def html:
   . as $r | $r.summary as $s | $s.region_overview as $ro | (($r.meta.accounts | length) > 1) as $multi
@@ -379,7 +445,7 @@ def html:
   + ".cp{margin-top:4px;font-size:11px;padding:2px 8px;border:1px solid #9aa5b1;background:#fff;border-radius:5px;cursor:pointer}.cp.ok{background:#e6f4ea}"
   + "h2{font-size:16px;margin:18px 0 6px}h3{font-size:14px;margin:12px 0 6px}#q{width:420px;padding:7px 10px;border:1px solid #9aa5b1;border-radius:6px;margin:8px 0 12px;font-size:13px}"
   + ".grid{display:flex;flex-wrap:wrap;gap:16px;align-items:flex-start}table.sortable th{cursor:pointer}table.sortable th:hover{background:#dde3ea}td.n{text-align:right}"
-  + ".st.db{background:#e3f0fb;color:#0d47a1}tfoot td{border-top:2px solid #232f3e;background:#f0f3f7;font-weight:600}"
+  + ".st.db{background:#e3f0fb;color:#0d47a1}.gb{display:inline-block;margin-left:6px;padding:1px 7px;border-radius:9px;font-size:11px;background:#ede7f6;color:#4527a0;font-weight:600}.gb.unk{background:#eceff1;color:#546e7a}table.globals td{vertical-align:top}tfoot td{border-top:2px solid #232f3e;background:#f0f3f7;font-weight:600}"
   + ".bar{height:4px;background:#e6e9ee;border-radius:2px;margin-top:3px;min-width:70px}.bar i{display:block;height:4px;border-radius:2px;background:#2e7d32}.bar i.warn{background:#e08a00}.bar i.bad{background:#c62828}"
   + ".toolbar{position:sticky;top:0;z-index:5;background:#f5f6f8;display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:8px 0;margin-bottom:6px;border-bottom:1px solid #dde3ea}"
   + ".toolbar select,.toolbar input,.toolbar button{padding:6px 8px;border:1px solid #9aa5b1;border-radius:6px;font-size:13px;background:#fff}.toolbar input#q{width:240px;margin:0}.toolbar button{cursor:pointer}.toolbar button.pri{background:#232f3e;color:#fff;border-color:#232f3e}"
@@ -387,7 +453,7 @@ def html:
   + ".about{margin:18px 0;background:#fff;border-radius:8px;padding:8px 14px;box-shadow:0 1px 3px rgba(0,0,0,.12);font-size:12.5px}.about summary{cursor:pointer;font-weight:600}footer{padding:10px 26px 24px;color:#7b8794;font-size:12px}</style></head><body>"
   + "<header id=\"top\"><h1>RDS patch compliance report</h1><p>\($r.meta.generated_utc | h) &middot; \($r.meta.generated_local | h) &middot; accounts \($r.meta.accounts | map("\(.account) (\(.profile))") | join(", ") | h) &middot; Regions: \($ro | region_line)\(if $r.meta.merge then " &middot; merged from \($r.meta.merge.files) file(s)" else "" end)</p></header><main>"
   + "<div class=\"toolbar\" id=\"filters\"><select id=\"f-acct\" aria-label=\"Account\"><option value=\"\">All accounts</option></select><select id=\"f-region\" aria-label=\"Region\"><option value=\"\">All regions</option></select>"
-  + "<select id=\"f-engine\" aria-label=\"Engine\"><option value=\"\">All engines</option></select><select id=\"f-status\" aria-label=\"Compliance status\"><option value=\"\">All statuses</option></select>"
+  + "<select id=\"f-engine\" aria-label=\"Engine\"><option value=\"\">All engines</option></select><select id=\"f-status\" aria-label=\"Compliance status\"><option value=\"\">All statuses</option></select><select id=\"f-global\" aria-label=\"Global cluster\"><option value=\"\">Global cluster: all</option></select>"
   + "<input id=\"q\" type=\"search\" placeholder=\"Search DB name (cluster / instance / member)\"><button id=\"f-reset\" type=\"button\">Reset</button><button id=\"f-csv\" class=\"pri\" type=\"button\">Export CSV</button><span class=\"cnt\" id=\"f-count\"></span></div>"
   + "<p class=\"flt-note\">Filtered view: cards, Per account and Per region show only the servers matching the filters. Per engine / major always shows all servers.</p>"
   + "<p class=\"muted rule\"><b>Rule:</b> NON-COMPLIANT when more than \($s.max_behind) valid minor versions behind (same major). <a href=\"#about\">About this report</a></p>"
@@ -399,15 +465,15 @@ def html:
   + card("Auto minor upgrade off"; $s.auto_minor_off; (if $s.auto_minor_off > 0 then "warn" else "ok" end); "incl. mixed clusters")
   + card("Pending maintenance"; $s.with_pending; (if $s.with_pending > 0 then "warn" else "ok" end); ($s.pending_by_action | to_entries | map("\(.key) \(.value)") | join(", ") | if . == "" then "none" else . end))
   + card("Version not returned"; $s.deprecated; (if $s.deprecated > 0 then "bad" else "ok" end); "deprecated / not offered")
+  + card("Global databases"; $s.global_databases; (if $s.global_unknown > 0 then "unk" else "" end); "\($s.global_members) members" + (if $s.global_unknown > 0 then "; \($s.global_unknown) unknown" else "" end))
   + card("Regions"; "\($ro.with_databases) / \($ro.checked)"; (if $ro.error > 0 then "bad" else "" end); "with databases; \($ro.empty) empty, \($ro.error) error(s)") + "</div>"
-  + html_accounts($s) + html_regions($r; $s; $ro; $multi)
+  + html_accounts($s) + html_regions($r; $s; $ro; $multi) + html_globals($s)
   + "<h3>Per engine and major version</h3><table><tr><th>Engine</th><th>Major</th><th>Total</th><th>Compliant</th><th>Non-compliant</th><th>Unknown</th><th>Latest minor</th><th>Support</th></tr>"
   + ([$s.engines[] | . as $e | .majors[] | "<tr><td><a href=\"#\($e.anchor)\">\($e.engine | h)</a></td><td>\(.major | h)</td><td>\(.total)</td><td class=\"ok\">\(.compliant)</td><td class=\"\(if .non_compliant > 0 then "bad" else "" end)\">\(.non_compliant)</td><td>\(.unknown)</td><td class=\"mono\">\(.latest_minor | dash | h)</td><td class=\"\(.support_flag | sfc)\">\(.support_flag | dash | h)\(if .standard_support_end != null then "<div class=\"sub\">standard end \(.standard_support_end)</div>" else "" end)</td></tr>"] | join(""))
   + "</table>"
   + ([$s.engines[] | . as $e
       | "<section id=\"\($e.anchor)\"><h2>\($e.engine | h) <span class=\"muted\">\($e.total) &middot; compliant \($e.compliant) &middot; non-compliant \($e.non_compliant) &middot; unknown \($e.unknown) &middot; \($e.pct_compliant)% &middot; <a href=\"#top\">top</a></span></h2>"
-        + "<table class=\"main\"><thead><tr><th>Status</th><th>Behind</th><th>Identifier / members</th><th>Type</th><th>Major</th><th>Current</th><th>Latest minor</th><th>Valid minor targets</th><th>Auto-upgrade default</th><th>Auto minor</th><th>Standard end</th><th>Extended end</th><th>Support</th><th>Pending maint.</th><th>Maint. window</th><th>Account</th>"
-        + ($tagcols | map("<th>\(. | h)</th>") | join("")) + "<th>Upgrade command (printed only)</th><th>Note / ARN</th></tr></thead><tbody>"
+        + "<table class=\"main\"><thead><tr><th>Status</th><th>Behind</th><th>Identifier / members</th><th>Type</th><th>Major</th><th>Current</th><th>Latest minor</th><th>Valid minor targets</th><th>Auto-upgrade default</th><th>Auto minor</th><th>Standard end</th><th>Extended end</th><th>Support</th><th>Pending maint.</th><th>Maint. window</th><th>Account</th></tr></thead><tbody>"
         + ([$irows[] | select(.engine == $e.engine) | html_row] | join("")) + "</tbody></table></section>"] | join(""))
   + (if ($r.rows | length) == 0 then "<p>No servers matched.</p>" else "" end)
   + (if ($r.errors | length) > 0 then "<h2>Errors</h2><ul>" + ($r.errors | map("<li>\(.profile | h)/\(.region | h): \(.call | h): \(.message | h)</li>") | join("")) + "</ul>" else "" end)
@@ -417,17 +483,14 @@ def html:
   + "<li>Counted are only the valid minor upgrade targets RDS returns for the server's current version (describe-db-engine-versions --engine-version &lt;current&gt;, ValidUpgradeTarget with IsMajorVersionUpgrade=false). Latest minor per major = highest valid target seen (or the current version when up to date).</li>"
   + "<li><b>Regions:</b> \($ro | region_mode_txt | h). Empty regions are only counted; tables list regions with databases or an AWS error.</li>"
   + "<li><b>Pending maint.</b> = maintenance actions AWS has scheduled or offered for this server that haven't been applied yet (cluster rows include their member instances' actions); click the badge to expand, hover for IST dates.</li>"
-  + "<li>Read-only: nothing was changed. Upgrade commands are printed only (no --apply-immediately: they apply in the next maintenance window).</li></ul></details>"
+  + "<li><b>Global databases</b> (Aurora): membership from describe-global-clusters (one call per account). Overall status = the worst member; <i>region status mismatch</i> = members on the same version but with a different status (valid targets differ per region). Automatic minor version upgrade does not apply to global database members.</li>"
+  + "<li>Read-only: nothing was changed.</li></ul></details>"
   + "<script type=\"application/json\" id=\"pc-data\">" + page_data($r) + "</script>"
   + "</main><footer>\($r.meta.script | h) v\($r.meta.version | h) &middot; read-only</footer>"
   + "<script>(function(){Array.prototype.forEach.call(document.querySelectorAll('table.main,table.sortable'),function(t){var b=t.tBodies[0],dir={};"
   + "t.tHead.addEventListener('click',function(e){var th=e.target.closest('th');if(!th)return;var i=th.cellIndex;dir[i]=!dir[i];"
   + "var rows=Array.prototype.slice.call(b.rows);rows.sort(function(x,y){var a=x.cells[i],c=y.cells[i];if(!a||!c)return 0;var va=a.getAttribute('data-s'),vb=c.getAttribute('data-s');"
   + "var r=(va!==null&&vb!==null)?parseFloat(va)-parseFloat(vb):a.textContent.localeCompare(c.textContent,undefined,{numeric:true});return dir[i]?r:-r;});rows.forEach(function(r){b.appendChild(r);});});});"
-  + "document.addEventListener('click',function(e){var bt=e.target.closest('.cp');if(!bt)return;var txt=bt.previousElementSibling.textContent;"
-  + "var done=function(){bt.textContent='Copied';bt.classList.add('ok');setTimeout(function(){bt.textContent='Copy';bt.classList.remove('ok');},1500);};"
-  + "var fb=function(){var ta=document.createElement('textarea');ta.value=txt;document.body.appendChild(ta);ta.select();try{document.execCommand('copy');done();}catch(x){}document.body.removeChild(ta);};"
-  + "if(navigator.clipboard&&window.isSecureContext){navigator.clipboard.writeText(txt).then(done,fb);}else{fb();}});"
   + "})();</script><script>" + ($ARGS.named.pagejs // "") + "</script></body></html>";
 
 if $mode == "rows" then rows elif $mode == "finalize" then finalize elif $mode == "text" then text elif $mode == "csv" then csv
