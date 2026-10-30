@@ -362,17 +362,17 @@ def gbadge: if .global_role == "unknown" then " <span class=\"gb unk\" title=\"d
   elif (.global_cluster // "") != "" then " <span class=\"gb\" title=\"Aurora global database\">global: \(.global_cluster | h) &middot; \(.global_role | h)\(if .member_count == 0 then " (headless)" else "" end)</span>" else "" end;
 def html_row:
   . as $x
-  | "<tr data-i=\"\(._i)\"><td><span class=\"st \(.compliance_status | stc)\">\(.compliance_status)</span></td><td data-s=\"\(.versions_behind // -1)\">\(.versions_behind | dash)</td>"
+  | "<tr data-i=\"\(._i)\"><td><span class=\"st \(.compliance_status | stc)\">\(.compliance_status | h)</span></td><td data-s=\"\(.versions_behind // -1 | h)\">\(.versions_behind | dash)</td>"
   + "<td><b>\(.identifier | h)</b>" + gbadge + (if .members != "" then "<div class=\"sub\">\(.members | h)</div>" else "" end) + "</td>"
   + "<td>\(.resource_type | h)</td><td>\(.major_version | h)</td><td class=\"mono\">\(.current_version | h)\(if .deprecated_version then " <span class=\"st bad\">DEPRECATED</span>" else "" end)</td><td class=\"mono\">\(.latest_minor_version | dash | h)</td>"
   + "<td class=\"mono small\">\(.newer_versions | short_list | h)</td><td class=\"mono small\">\(.default_auto_upgrade_target | dash | h)</td>"
   + "<td class=\"\(if .auto_minor_upgrade == "true" then "ok" elif .auto_minor_upgrade == "unknown" then "muted" else "warn" end)\">\(.auto_minor_upgrade | h)</td>"
   + "<td>\(.standard_support_end | dash | h)</td><td>\(.extended_support_end | dash | h)</td><td class=\"\(.support_flag | sfc)\">\(.support_flag | h)</td>"
-  + "<td data-s=\"\(.pending_actions_count)\">" + (if .pending_actions_count == 0 then "<span class=\"muted\">0</span>"
-       else "<details class=\"pend\" title=\"\(pend_tip | h)\"><summary><span class=\"badge\">\(.pending_actions_count)</span></summary><ul>"
+  + "<td data-s=\"\(.pending_actions_count | h)\">" + (if .pending_actions_count == 0 then "<span class=\"muted\">0</span>"
+       else "<details class=\"pend\" title=\"\(pend_tip | h)\"><summary><span class=\"badge\">\(.pending_actions_count | h)</span></summary><ul>"
             + (.pending_actions_detail | map("<li>\(.text | h)" + (if .auto_applied_after_ist then "<div class=\"sub\">auto-apply \(.auto_applied_after_utc | h) = \(.auto_applied_after_ist | h)</div>" else "" end)
                 + (if .forced_apply_ist then "<div class=\"sub\">forced \(.forced_apply_utc | h) = \(.forced_apply_ist | h)</div>" else "" end) + "</li>") | join("")) + "</ul></details>"
-            + (if .days_until_maintenance != null then "<div class=\"sub \(if .days_until_maintenance < 0 then "bad" elif .days_until_maintenance <= 14 then "warn" else "" end)\">next \(.next_maintenance) &middot; \(.days_until_maintenance | dleft)</div>" else "" end) end) + "</td><td class=\"small\">\(.maint_window_utc | dash | h) UTC<br>\(.maint_window_ist | dash | h) IST</td>"
+            + (if .days_until_maintenance != null then "<div class=\"sub \(if .days_until_maintenance < 0 then "bad" elif .days_until_maintenance <= 14 then "warn" else "" end)\">next \(.next_maintenance | h) &middot; \(.days_until_maintenance | dleft)</div>" else "" end) end) + "</td><td class=\"small\">\(.maint_window_utc | dash | h) UTC<br>\(.maint_window_ist | dash | h) IST</td>"
   + "<td>\(.account_id | h)<div class=\"sub\">\(.profile | h) &middot; \(.region | h)</div></td>"
   + "</tr>";
 def rgc: {"databases": "db", "error": "bad", "empty": "unk"}[.] // "unk";

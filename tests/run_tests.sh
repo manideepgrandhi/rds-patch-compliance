@@ -118,7 +118,7 @@ vce oracle-ee "${O}2026-10.mrp-2026-10.r1" 1 "${O}2026-07.mrp-2026-07.r10"
 
 echo "== usage / validation"
 t help 0 fleet --help;               has help out 'Exit codes'; has help out 'read-only'; has help out '--max-behind'; has help out 'describe-global-clusters'
-t version 0 fleet --version;         has version out '1\.4\.0'
+t version 0 fleet --version;         has version out '1\.4\.1'
 t badopt 1 fleet --bogus
 t badfmt 1 fleet -r us-east-1 -F xml
 t multinoout 1 fleet -r us-east-1 -F csv,html
@@ -510,6 +510,20 @@ if command -v node >/dev/null 2>&1 && [[ -x "${CHROME:-/usr/bin/google-chrome}" 
     res="$(node "$HERE/browser_check.js" "$(find "$MG" -name 'rds_patch_compliance_111111111111_*.html' | head -1)" 2>&1)"; rc=$?
     chk "browser: single-account report ${res:0:300}" test "$rc" -eq 0
 else echo "  skip browser check (node + puppeteer-core on NODE_PATH + Chrome not found)"; fi
+
+echo "== v1.4.1: tampered --merge file cannot inject HTML/JS (M1)"
+XP='<img src=x data-xss=1 onerror="window.__xss=1">'
+XD="$OUT/xss in"; mkdir -p "$XD"
+jq --arg x "$XP" '.rows[0] |= (.versions_behind = null | .compliance_status = ("UNKNOWN" + $x))' "$SD1" >"$XD/rds_patch_111111111111_20260921.json"
+mg xss 0 --merge "$XD" -o "$OUT/xss out/x.html" -F html,json,csv
+XH="$OUT/xss out/x.html"
+chk "xss: report written" test -s "$XH"
+chk "xss: payload survived the merge (test is meaningful)" jq -e '[.rows[] | select(.compliance_status | test("data-xss"))] | length == 1' "$OUT/xss out/x.json"
+chk "xss: payload only appears escaped in the HTML body" bash -c "! grep -q '<img src=x data-xss' '$XH' && grep -q '&lt;img src=x data-xss' '$XH'"
+if command -v node >/dev/null 2>&1 && [[ -x "${CHROME:-/usr/bin/google-chrome}" ]] && NODE_PATH="${NODE_PATH:-}" node -e 'require("puppeteer-core")' 2>/dev/null; then
+    res="$(node "$HERE/xss_check.js" "$XH" 2>&1)"; rc=$?
+    chk "xss: headless Chrome, no payload executed or injected ${res:0:300}" test "$rc" -eq 0
+else echo "  skip xss browser check (node + puppeteer-core on NODE_PATH + Chrome not found)"; fi
 
 echo "== v1.3.1: merge compatibility (v1.3.0 + v1.3.1 files, report + summary script, duplicate older account)"
 CP="$OUT/compat in"; mkdir -p "$CP"; cp "$HERE"/fixtures/v130/*.json "$CP/"

@@ -19,9 +19,11 @@ cd ~/rds-patch-compliance && ./rds_patch_compliance_report.sh --version
 **Option 2 - release zip** (no git needed; re-run to update):
 
 ```
-cd ~ && curl -fsSLO https://github.com/manideepgrandhi/rds-patch-compliance/releases/latest/download/rds-patch-compliance.zip
-unzip -oq rds-patch-compliance.zip && cd ~/rds-patch-compliance && ./rds_patch_compliance_report.sh --version
+cd ~ && curl -fsSLO https://github.com/manideepgrandhi/rds-patch-compliance/releases/latest/download/rds-patch-compliance.zip && curl -fsSLO https://github.com/manideepgrandhi/rds-patch-compliance/releases/latest/download/rds-patch-compliance.zip.sha256
+sha256sum -c rds-patch-compliance.zip.sha256 && unzip -oq rds-patch-compliance.zip && cd ~/rds-patch-compliance && ./rds_patch_compliance_report.sh --version
 ```
+
+`sha256sum -c` must print `rds-patch-compliance.zip: OK`. If it reports `FAILED`, the `&&` chain stops before `unzip`; delete the zip and do not run it. Releases from v1.4.1 on publish `rds-patch-compliance.zip.sha256` next to the zip.
 
 The zip is slim (v1.3.2): one top-level folder `rds-patch-compliance/` with only the runtime files - both `.sh` scripts (execute bits kept), `lib/`, `README.md`, `EXAMPLES.md` and `rds_patch_compliance_report.conf.example`. No `docs/`, `samples/` or `tests/` (they are not needed to run; clone the repo if you want them). GitHub's "Source code" archives are slim too (`.gitattributes` export-ignore). Releases: <https://github.com/manideepgrandhi/rds-patch-compliance/releases>. Needs bash, jq and the AWS CLI (all present in CloudShell).
 
@@ -325,6 +327,7 @@ No AWS account is used and nothing can reach AWS.
 
 ## Changelog
 
+* **1.4.1** - Security fixes. HTML report: `compliance_status`, `next_maintenance`, `versions_behind` and `pending_actions_count` are now HTML-escaped, so a tampered `--merge` / `--save-data` file can no longer inject markup or script (stored XSS). In-page filters coerce the pending count to a number. The regression test renders a poisoned merge file in headless Chrome. Releases publish `rds-patch-compliance.zip.sha256`, and the README install verifies it with `sha256sum -c` before unzipping. The release workflow pins `actions/checkout` to a commit SHA and is read-only except for the publish job. The report output is otherwise unchanged.
 * **1.4.0** - Aurora global database awareness (read-only `rds describe-global-clusters`, once per account; failure = warning + global `unknown`): `global_cluster` / `global_role` columns at the end, row badge, **Global cluster** dropdown (incl. Not global), Global databases section (overall = worst member, `region status mismatch`, `NOT SCANNED` members, pending actions on the global ARN), `Global databases: N (M members)` in the header, cards and summary script (non-compliant list grouped by global database). `--save-data` adds `globals` / `global_lookup` (`schema_minor: 1`); older files still merge (global unknown). Removed from all displayed outputs: tag columns, `arn`, `upgrade_command` + Copy button, `note`; merge no longer unions tag columns; `-T` ignored with a warning. CSV is 27 columns.
 * **1.3.2** - Release zip contains only runtime files (scripts, `lib/`, README, EXAMPLES, conf example); `docs/`, `samples/`, `tests/` excluded, also from GitHub source archives (`.gitattributes`). Sibling links point to the DBA repo. No report changes.
 * **1.3.1** - Removed the "Top N most behind" section from HTML and text (and `summary.top_behind` from JSON); `--top` / `top =` still accepted, ignored with a warning. Shorter header in HTML and text (title, run time UTC + IST, accounts, region count line, one-line rule); the long explanations moved to a collapsed **About this report** (HTML bottom) / `ABOUT THIS REPORT` (text end). `--merge` reads v1.3.0 and v1.3.1 `--save-data` files from either script (tested with committed v1.3.0 fixtures in `tests/fixtures/v130/`).
