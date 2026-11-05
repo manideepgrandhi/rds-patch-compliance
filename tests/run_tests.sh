@@ -118,7 +118,7 @@ vce oracle-ee "${O}2026-10.mrp-2026-10.r1" 1 "${O}2026-07.mrp-2026-07.r10"
 
 echo "== usage / validation"
 t help 0 fleet --help;               has help out 'Exit codes'; has help out 'read-only'; has help out '--max-behind'; has help out 'describe-global-clusters'
-t version 0 fleet --version;         has version out '1\.5\.0'
+t version 0 fleet --version;         has version out '1\.5\.1'
 t badopt 1 fleet --bogus
 t badfmt 1 fleet -r us-east-1 -F xml
 t multinoout 1 fleet -r us-east-1 -F csv,html
@@ -269,7 +269,7 @@ CSV="$(find "$OUT/rep" -name '*.csv' ! -name '*_regions.csv')"; HTML="$(find "$O
 chk "csv header" test "$(head -1 "$CSV")" = '"account_id","profile","region","resource_type","identifier","members","engine","major_version","current_version","latest_minor_version","versions_behind","newer_versions","default_auto_upgrade_target","compliance_status","auto_minor_upgrade","standard_support_end","extended_support_end","support_flag","pending_actions_count","pending_actions","deprecated_version","maint_window_utc","maint_window_ist","next_maintenance","days_until_maintenance","global_cluster","global_role","account_name"'
 chk "csv rows = 22" test "$(python3 -c 'import csv,sys; print(sum(1 for _ in csv.reader(open(sys.argv[1])))-1)' "$CSV")" -eq 22
 chk "csv parses with 28 columns everywhere" test "$(python3 -c 'import csv,sys; print(set(len(r) for r in csv.reader(open(sys.argv[1]))))' "$CSV")" = "{28}"
-for p in 'id="q"' 'id="f-global"' 'class="badge">2<' 'details class="pend"' '01:30 IST' "haven't been applied yet" 'Valid minor targets' 'Auto-upgrade default' 'table class="main"' 'st bad' 'st ok' 'Extended Support' 'id="about"' 'About this report' 'id="eng-tbl"' 'details class="eng-sec"' 'id="f-flag"' 'localeCompare' 'href="#eng-aurora-postgresql"'; do
+for p in 'id="q"' 'id="f-gl"' 'id="f-sa"' 'id="empty"' 'class="badge">2<' 'details class="pend"' '01:30 IST' "haven't been applied yet" 'Valid minor targets' 'Auto-upgrade default' 'table class="main"' 'st bad' 'st ok' 'Extended Support' 'id="about"' 'About this report' 'id="eng-tbl"' 'details class="eng-sec"' 'id="f-flag"' 'localeCompare' 'href="#eng-aurora-postgresql"'; do
     if grep -qF -- "$p" "$HTML"; then ok "html has $p"; else bad "html lacks $p"; fi
 done
 chk "html is well-formed enough (python html.parser)" python3 -c 'import html.parser,sys; html.parser.HTMLParser().feed(open(sys.argv[1]).read())' "$HTML"
@@ -514,7 +514,7 @@ else echo "  skip browser check (node + puppeteer-core on NODE_PATH + Chrome not
 echo "== v1.4.1: tampered --merge file cannot inject HTML/JS (M1)"
 XP='<img src=x data-xss=1 onerror="window.__xss=1">'
 XD="$OUT/xss in"; mkdir -p "$XD"
-jq --arg x "$XP" '.rows[0] |= (.versions_behind = null | .compliance_status = ("UNKNOWN" + $x)) | .rows[1] |= (.engine = ("aurora-mysql" + $x) | .compliance_status = "NON-COMPLIANT") | .accounts[0].name = ("acct" + $x)' "$SD1" >"$XD/rds_patch_111111111111_20260921.json"
+jq --arg x "$XP" '.rows[0] |= (.versions_behind = null | .compliance_status = ("UNKNOWN" + $x)) | .rows[1] |= (.engine = ("aurora-mysql" + $x) | .compliance_status = "NON-COMPLIANT") | .accounts[0].name = ("acct" + $x) | .rows[2] |= (.global_cluster = ("g" + $x) | .global_role = "primary")' "$SD1" >"$XD/rds_patch_111111111111_20260921.json"
 mg xss 0 --merge "$XD" -o "$OUT/xss out/x.html" -F html,json,csv
 XH="$OUT/xss out/x.html"
 chk "xss: report written" test -s "$XH"
@@ -573,7 +573,7 @@ GT="$(find "$OUT/glob" -name '*[0-9].txt' | head -1)"; GH="$(find "$OUT/glob" -n
 chk "glob txt: header + section + mismatch" bash -c "grep -q 'Global databases : 2 (4 members)' '$GT' && grep -q '^GLOBAL DATABASES' '$GT' && grep -q 'region status mismatch' '$GT'"
 chk "glob csv: global_cluster/global_role then account_name last" bash -c "head -1 '$GC' | grep -q '\"global_cluster\",\"global_role\",\"account_name\"\$'"
 chk "glob: no ARN / command / tags / notes in txt csv html" bash -c "! grep -lE 'arn:aws|modify-db|modify-global|tag:|\"note\"|Copy</button>' '$GT' '$GC' '$GH'"
-chk "glob html: dropdown + section" bash -c "grep -q 'id=\"f-global\"' '$GH' && grep -q 'Not global' '$GH' && grep -q 'id=\"globals\"' '$GH'"
+chk "glob html: checkboxes + collapsed section + mismatch badge" bash -c "grep -q 'id=\"f-gl\"' '$GH' && ! grep -q 'f-global' '$GH' && grep -q 'details class=\"gdb\" data-g=\"orders-global\"' '$GH' && grep -q 'class=\"gb mm\"' '$GH' && grep -q '1 mismatched' '$GH' && grep -q '1 primary + 2 secondaries' '$GH'"
 MOCK_GLOBAL_DENY=1 t globdeny 0 global "${GR[@]}" -F json
 has globdeny err 'WARN.*describe-global-clusters failed.*AccessDenied'
 rowt globdeny orders-aurora-pg15 '.global_cluster == null and .global_role == "unknown" and .compliance_status == "COMPLIANT"'
@@ -591,7 +591,7 @@ t gtag 0 fleet -P prod -r us-east-1 -T Owner -F csv -o "$OUT/gtag"
 has gtag err 'ignored since v1.4.0'; chk "gtag: no tag column" bash -c "! grep -rq 'tag:' '$OUT/gtag'"
 if command -v node >/dev/null 2>&1 && [[ -x "${CHROME:-/usr/bin/google-chrome}" ]] && NODE_PATH="${NODE_PATH:-}" node -e 'require("puppeteer-core")' 2>/dev/null; then
     res="$(node "$HERE/browser_global.js" "$GH" ${SHOTS:+"$SHOTS"} 2>&1)"; rc=$?
-    chk "browser: Global cluster dropdown ${res:0:300}" test "$rc" -eq 0
+    chk "browser: Global/Standalone, global section, search ${res:0:300}" test "$rc" -eq 0
 fi
 
 echo "== v1.5.0: account names (config map > iam alias > number), engine table, picker"

@@ -169,7 +169,9 @@ function parseCsv(t) {
   ok(await g.evaluate(() => { const f = document.getElementById('f-flag'), t = f.parentNode; return t.lastElementChild.previousElementSibling.previousElementSibling.previousElementSibling === f; }), 'Flag dropdown at the end of the filter row (before the buttons)');
   const nglob = D.rows.filter(x => x.global_cluster).length;
   await g.click('.card[data-k="global-databases"]'); await sleep(30);
-  ok(nglob === 0 || ((await g.evaluate(() => document.getElementById('f-global').value)) === '__all' && (await vis()) === nglob), 'Global databases card = All global databases');
+  const nglobA = D.rows.filter(x => x.global_cluster && /^aurora/.test(x.engine)).length;
+  ok(nglob === 0 || ((await g.evaluate(() => document.getElementById('f-gl').checked)) && (await vis()) === nglobA), 'Global databases card ticks Global');
+  await g.click('.card[data-k="global-databases"]'); await sleep(30);
   await g.click('.card[data-k="servers-clusters"]'); await sleep(30);
   ok((await vis()) === N && await g.evaluate(() => !document.body.classList.contains('filtered')), 'Servers card resets the filters');
   await g.focus('.card[data-k="compliant"]'); await g.keyboard.press('Enter'); await sleep(30);

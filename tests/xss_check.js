@@ -17,6 +17,14 @@ const path = require('path');
   for (const c of await g.$$('.card')) { try { await c.hover(); await c.click(); await c.click(); } catch (e) {} }
   for (const c of await g.$$('#eng-tbl .car, #eng-tbl a.en, #eng-tbl .lnk, #eng-tbl th, #eng-all')) { try { await c.click(); } catch (e) {} }
   try { await g.click('#f-csv'); for (const c of await g.$$('#cpk input')) await c.click(); await g.click('#cpk [data-a="x"]'); } catch (e) {}
+  for (const c of await g.$$('#f-gl, #f-sa, details.gdb summary')) { try { await c.click(); } catch (e) {} }
+  const XQ = ['<img src=x data-xss=1 onerror="window.__xss=9">', '"><svg onload=window.__xss=8>', "'); window.__xss=7; ('", '.*[(+?\\', '&amp;<'];
+  for (const v of XQ) { await g.$eval('#q', (e, v) => { e.value = v; e.dispatchEvent(new Event('input')); }, v); await new Promise(r => setTimeout(r, 30)); }
+  ok(await g.evaluate(() => !document.getElementById('empty').hidden || document.querySelectorAll('table.main tbody tr[data-i]:not([style*="none"])').length > 0), 'hostile search: empty state or rows, page intact');
+  const tips = await g.$$eval('.gb, details.gdb summary', x => x.map(e => (e.title || '') + e.innerHTML).join(''));
+  ok(!/<img|<svg/i.test(tips), 'global badge tip / section rendered markup from data');
+  await g.$eval('#q', e => { e.value = 'data-xss'; e.dispatchEvent(new Event('input')); });
+  ok(await g.evaluate(() => [...document.querySelectorAll('details.gdb')].some(d => d.open) || !document.querySelector('details.gdb')), 'search for the payload opens the hostile global DB');
   const popTxt = await g.$$eval('.pop', p => p.map(x => x.innerHTML).join(''));
   ok(!/<img/i.test(popTxt), 'pop-up rendered markup from data');
   await new Promise(r => setTimeout(r, 300));

@@ -73,6 +73,9 @@ aws rds describe-db-engine-versions --engine aurora-postgresql --engine-version 
 printf '111111111111 = prod-payments\n222222222222 = nonprod-shared\n' >> my.conf
 ./rds_patch_compliance_report.sh --config my.conf -P prod,nonprod -F json | jq -r '.meta.accounts[] | "\(.account) \(.name)"'
 ./rds_patch_compliance_report.sh -P prod -F csv | python3 -c 'import csv,sys; [print(r["account_id"], r["account_name"], r["identifier"]) for r in csv.DictReader(sys.stdin)]'
+
+# 17d. Global databases with mismatched members (v1.5.1; in the HTML: tick Global or click the Global databases card)
+./rds_patch_compliance_report.sh -P prod -A -F json | jq -r '.summary.globals[] | select(.version_differs or .region_status_mismatch) | "\(.global_cluster) \(.account_id) \(.overall_status) \(.versions | join(","))"'
 ```
 
 Sample text summary (from the test mock, see `samples/sample_report.txt`):
