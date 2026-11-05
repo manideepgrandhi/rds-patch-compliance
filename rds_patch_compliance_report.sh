@@ -17,7 +17,7 @@ set -Eeuo pipefail
 umask 077
 
 readonly SCRIPT_NAME="${0##*/}"
-readonly SCRIPT_VERSION="1.4.1"
+readonly SCRIPT_VERSION="1.5.0"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly SCRIPT_DIR
 LIB="${RDS_PCR_LIB:-$SCRIPT_DIR/lib}/compliance.jq"
@@ -52,6 +52,7 @@ FAIL_ON_NC=0
 readonly SLACK_MAX_CHARS=35000
 LOG_FILE=""
 CONFIG_FILE=""
+declare -A ACCOUNT_NAMES=()   # config: 123456789012 = name (display only)
 AWS_TIMEOUT=30
 MAX_ATTEMPTS=5
 KEEP_WORKDIR=0
@@ -195,6 +196,13 @@ load_config() {
     while IFS= read -r line || [[ -n "$line" ]]; do
         lineno=$(( lineno + 1 )); line="${line%$'\r'}"
         [[ "$line" =~ ^[[:space:]]*(#|$) ]] && continue
+        if [[ "$line" =~ ^[[:space:]]*([0-9]{12})[[:space:]]*=[[:space:]]*(.*)$ ]]; then   # account name (plain text)
+            key="${BASH_REMATCH[1]}"; val="${BASH_REMATCH[2]}"
+            [[ "$val" =~ ^(.*[^[:space:]])?[[:space:]]+#.*$ ]] && val="${BASH_REMATCH[1]}"
+            val="${val%"${val##*[![:space:]]}"}"; val="${val//[$'\001'-$'\037']/}"
+            [[ "$val" =~ ^\"(.*)\"$ || "$val" =~ ^\'(.*)\'$ ]] && val="${BASH_REMATCH[1]}"
+            ACCOUNT_NAMES["$key"]="${val:0:64}"; continue
+        fi
         [[ "$line" =~ ^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*=[[:space:]]*(.*)$ ]] \
             || die 1 "Config $file:$lineno: invalid line (expected key=value)"
         key="${BASH_REMATCH[1],,}"; val="${BASH_REMATCH[2]}"
@@ -372,9 +380,13 @@ rjq() {   # rjq <mode> [extra jq args...]
         --argjson top_n "$TOP_N" --argjson nc_only "$( (( NC_ONLY )) && echo true || echo false)" \
         --argjson oracle_any "$( (( ORACLE_ANY_LINE )) && echo true || echo false)" \
         --argjson tagcols "$(json_array "${TAG_COLUMNS[@]}")" --argjson f "$FILTERS_JSON" \
-        "${PAGE_ARGS[@]}" -f "$LIB" "$@"
+        --argjson acct_names "$(account_names_json)" "${PAGE_ARGS[@]}" -f "$LIB" "$@"
 }
 PAGE_ARGS=()
+account_names_json() {   # config names as a JSON object (they win over IAM aliases and saved names)
+    local k; { for k in "${!ACCOUNT_NAMES[@]}"; do printf '%s\t%s\n' "$k" "${ACCOUNT_NAMES[$k]}"; done; } \
+        | jq -Rcs 'split("\n") | map(select(. != "") | split("\t") | {key: .[0], value: (.[1:] | join(" "))}) | from_entries'
+}
 unix_eol() { if (( JQ_CRLF )); then tr -d '\r'; else cat; fi; }   # jq.exe (Windows) writes CRLF: keep HTML/JSON/text LF-only
 detect_jq_eol() { if [[ "$(jq -jn '"x\n"' | wc -c | tr -d ' \r')" != 2 ]]; then JQ_CRLF=1; log_debug "jq writes CRLF line ends; adapting"; fi; }
 
@@ -611,7 +623,15 @@ collect_profile() {   # collect_profile <index> <profile>
     fi
     account="$(jq -r '.Account' "$WORK/p$idx/sts.json")"
     log_info "Profile ${profile:-default}: account $account ($(jq -r '.Arn' "$WORK/p$idx/sts.json"))"
-    ACCOUNTS_JSON+=("$(jq -cn --arg a "$account" --arg p "${profile:-default}" '{account: $a, profile: $p}')")
+    local aname="${ACCOUNT_NAMES[$account]:-}"
+    if [[ -z "$aname" ]]; then   # IAM account alias: optional, read-only; denied / none = number only
+        AWS_SOFT=1
+        if aws_call "$WORK/p$idx/alias.json" "$profile" "$base" iam list-account-aliases; then
+            aname="$(jq -r '(.AccountAliases // [])[0] // "" | explode | map(select(. >= 32)) | implode | .[0:64]' "$WORK/p$idx/alias.json" | tr -d '\r')"
+        else log_debug "Account alias for $account not available (iam:ListAccountAliases)"; fi
+        AWS_SOFT=0
+    fi
+    ACCOUNTS_JSON+=("$(jq -cn --arg a "$account" --arg p "${profile:-default}" --arg n "$aname" '{account: $a, profile: $p, name: $n}')")
     if (( ALL_REGIONS )); then
         if ! aws_call "$WORK/p$idx/regions.json" "$profile" "$base" ec2 describe-regions; then
             add_error "$account" "$profile" "-" "ec2 describe-regions" "$LAST_ERR"; return 0
@@ -802,6 +822,7 @@ dry_run_plan() {
         r="${REGIONS[0]:-<region>}"
         echo "Profile ${p:-default}:"
         aws_base "$p" "$r"; printf '    %s\n' "$(printf '%q ' "${AWS_CMD[@]}" sts get-caller-identity)"
+        printf '    %s\n' "$(printf '%q ' "${AWS_CMD[@]}" iam list-account-aliases) (once per account, unless a name is set in the config; optional)"
         (( ALL_REGIONS )) && printf '    %s\n' "$(printf '%q ' "${AWS_CMD[@]}" ec2 describe-regions)"
         if [[ "$REGION_MODE" == discover ]]; then
             echo "  discovery probe, every enabled region, $PROBE_PARALLEL at a time (2 calls per region):"
@@ -821,7 +842,7 @@ dry_run_plan() {
     done
 }
 
-# shellcheck disable=SC2317  # invoked via trap
+# shellcheck disable=SC2317,SC2329  # invoked via trap
 on_exit() {
     local rc=$?
     trap - EXIT INT TERM
@@ -831,7 +852,7 @@ on_exit() {
     fi
     exit "$rc"
 }
-# shellcheck disable=SC2317
+# shellcheck disable=SC2317,SC2329
 on_signal() { log_error "Interrupted"; exit 130; }
 
 # ----------------------------------------------------------------------------
@@ -849,8 +870,8 @@ save_data() {   # raw, unfiltered-by-display data: one file per account by defau
           .meta as $m
           | {schema: $schema, schema_version: $sv, schema_minor: 1, script_version: $version, collected_epoch: $now, collected_at: $utc,
              collected_utc: ($m.generated_utc), collected_local: ($m.generated_local), tz: $tz, tz_abbr: $abbr, tz_offset: $off,
-             read_only: "describe calls + sts get-caller-identity only",
-             accounts: [$m.accounts[] | select(.account | mine) | {account, profile, collected_epoch: $now, collected_at: $utc}],
+             read_only: "describe calls + sts get-caller-identity + iam list-account-aliases only",
+             accounts: [$m.accounts[] | select(.account | mine) | {account, profile, name: (.name // ""), collected_epoch: $now, collected_at: $utc}],
              settings: {max_behind: $m.max_behind, warn_days: $m.warn_days, filters: $m.filters, oracle_any_patch_line: $m.oracle_any_patch_line,
                         region_discovery: $m.region_discovery, lifecycle_api: $m.lifecycle_api, aws_calls: $m.aws_calls},
              regions: ([.rows[] | select(.account_id | mine) | .region] | unique),

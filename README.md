@@ -217,14 +217,15 @@ In the summary table the Oracle "latest minor" is shown per patch line. Sample: 
 ## Report
 
 * **Header** (v1.3.1, text and HTML; merged reports too): title, run time UTC + IST, accounts with numbers, the region count line and a one-line rule. Longer explanations (counting source, region mode, pending maintenance, read-only note) are in `ABOUT THIS REPORT` at the end of the text and a collapsed **About this report** section at the bottom of the HTML.
-* **SUMMARY first** (text and HTML): totals with % compliant; per engine and major version: total / compliant / non-compliant / unknown, latest minor, support state; counts of Extended Support, support ending soon, auto minor upgrade off, pending maintenance, deprecated.
+* **SUMMARY first** (text; HTML shows it as the Engine compliance table): totals with % compliant; per engine and major version: total / compliant / non-compliant / unknown, latest minor, support state; counts of Extended Support, support ending soon, auto minor upgrade off, pending maintenance, deprecated.
 * **Details:** one section per engine, sorted NON-COMPLIANT first, then UNKNOWN, COMPLIANT; within that most behind first, then name.
-* **HTML:** single file, summary cards, filter box (any text), click a column header to sort, colour-coded status; dropdown filters for account, region, engine, status and **Global cluster** (each global database, `Not global`, and `Global: unknown` when the lookup failed).
+* **HTML (v1.5.0):** two card rows: status (Servers, Compliant, Non-compliant, Unknown) and risk (Extended Support, Support ending, Auto minor off, Pending, Not returned, Global databases, Regions). Every card is a button (click, or Tab + Enter / Space): it sets the matching filter (Status, the new **Flag** dropdown, or Global cluster = **All global databases**), the active card is highlighted, a second click clears it, Servers resets. Hovering or focusing Non-compliant / Unknown shows the count per engine. Under the cards an **Engine compliance** table (sortable, sticky header, scrolls inside the box): one row per engine, ▸ opens its majors (only majors with issues unless **Show all majors** is ticked); the counts are links that filter the page; a **Filtered** tag shows when filters are on. Server sections per engine are collapsed (`Expand all` / `Collapse all`, engine names link to them) and open by themselves while a filter is active. **Export CSV** opens a column picker (all ticked by default; the choice is kept in the browser's localStorage); columns keep the standard order.
+* **HTML (earlier):** single file, summary cards, filter box (any text), click a column header to sort, colour-coded status; dropdown filters for account, region, engine, status and **Global cluster** (each global database, `Not global`, and `Global: unknown` when the lookup failed).
 * `--non-compliant-only` shows only NON-COMPLIANT rows (the summary still counts everything).
 
 ### Columns (CSV; the same fields are in JSON, HTML and text)
 
-`account_id, profile, region, resource_type, identifier, members, engine, major_version, current_version, latest_minor_version, versions_behind, newer_versions, default_auto_upgrade_target, compliance_status, auto_minor_upgrade, standard_support_end, extended_support_end, support_flag, pending_actions_count, pending_actions, deprecated_version, maint_window_utc, maint_window_ist, next_maintenance, days_until_maintenance, global_cluster, global_role` (27 columns)
+`account_id, profile, region, resource_type, identifier, members, engine, major_version, current_version, latest_minor_version, versions_behind, newer_versions, default_auto_upgrade_target, compliance_status, auto_minor_upgrade, standard_support_end, extended_support_end, support_flag, pending_actions_count, pending_actions, deprecated_version, maint_window_utc, maint_window_ist, next_maintenance, days_until_maintenance, global_cluster, global_role, account_name` (28 columns; `account_name` added at the end in v1.5.0)
 
 v1.4.0 removed the tag columns (Environment / Owner / Application), `arn`, `upgrade_command` (and the HTML Copy button) and `note` from every displayed output (HTML, CSV, text, summary script). They are still in the `-F json` rows and the `--save-data` file; merged outputs don't show them either. `-T` / `tag_columns` are accepted and ignored with a warning.
 
@@ -234,6 +235,16 @@ v1.4.0 removed the tag columns (Environment / Owner / Application), `arn`, `upgr
 * `pending_actions_count` / `pending_actions`: see "Pending maintenance" above.
 * `maint_window_ist`: the preferred maintenance window converted to IST (UTC+5:30), e.g. `sat:21:00-sat:21:30` → `sun:02:30-sun:03:00`.
 * `global_cluster` / `global_role`: the Aurora global database the cluster belongs to and its role (`primary` / `secondary`); empty for anything else; `unknown` role (empty cluster) when `describe-global-clusters` failed or the data file predates v1.4.0.
+
+### Account names (v1.5.0)
+
+Each account is shown as `name (number)` in the HTML (header, dropdown, tables), with the name in the text `Accounts :` line and a `NAME` column in PER ACCOUNT, and an `account_name` column at the end of CSV / JSON rows (searchable in the HTML search box). The name comes from, in order:
+
+1. the config file: `111111111111 = prod-payments` (12-digit key; quotes, trailing `# comment` and control characters stripped; max 64 characters);
+2. `aws iam list-account-aliases` (read-only, once per profile; needs `iam:ListAccountAliases`; failure or no alias is silent);
+3. nothing: the number only.
+
+Names are stored in `--save-data` files and carried through `--merge`; files from older versions merge with the number only.
 
 ### Aurora global databases (v1.4.0)
 
@@ -305,14 +316,15 @@ More in [EXAMPLES.md](EXAMPLES.md). `--help` lists every option.
       "rds:DescribePendingMaintenanceActions",
       "rds:DescribeDBEngineVersions",
       "rds:DescribeDBMajorEngineVersions",
-      "ec2:DescribeRegions"
+      "ec2:DescribeRegions",
+      "iam:ListAccountAliases"
     ],
     "Resource": "*"
   }]
 }
 ```
 
-`sts:GetCallerIdentity` needs no permission. DocumentDB and Neptune use the same `rds:` actions. Without `rds:DescribeDBMajorEngineVersions` the report still works; support dates show `unknown`. The AWS managed `ReadOnlyAccess` policy also covers it.
+`sts:GetCallerIdentity` needs no permission. DocumentDB and Neptune use the same `rds:` actions. Without `rds:DescribeDBMajorEngineVersions` the report still works; support dates show `unknown`. `iam:ListAccountAliases` (v1.5.0) is optional: without it accounts show the number only (or the config name). The AWS managed `ReadOnlyAccess` policy also covers both.
 
 ## Configuration file
 
@@ -322,10 +334,12 @@ See [rds_patch_compliance_report.conf.example](rds_patch_compliance_report.conf.
 
 No AWS account is used and nothing can reach AWS.
 
-* `tests/run_tests.sh` - 420+ checks against `tests/mock/aws` (realistic fleet: Aurora PostgreSQL 11/12/14/15/16 incl. Extended Support, Aurora MySQL 3, RDS PostgreSQL 13/16/17, MySQL 8.0/8.4, MariaDB, SQL Server, Oracle, Multi-AZ DB cluster, DocumentDB, Neptune). Covers counting only from ValidUpgradeTarget (the mock's full list differs on purpose), major targets excluded, the default auto-upgrade target, current version not returned, pending-actions text, version compare units (`15.10 > 15.9`, Aurora MySQL, SQL Server, Oracle), the 2/3 boundary, `--max-behind`, lookup failure (UNKNOWN), deprecated version, lifecycle API missing / denied, multi-profile / multi-region, all regions, filters, outputs, alerts (local stubs), region discovery (empty regions skipped, cluster-only region, probe AccessDenied scanned anyway, `--no-discover`, `-r` without probe, parallel probes faster than serial with the same result, dry-run, `aws_calls`), the region breakdown adding up to the totals in every format, a 3000-instance fleet (no ARG_MAX issues), v1.3.0 `--save-data` / `--merge` (names, contents, read-only calls, zero AWS calls during merge, newer file wins, days recomputed, exit 3 inputs, Windows paths with spaces and a CRLF `jq` stub), and that no file is written into the tool folder. When node, `puppeteer-core` (on `NODE_PATH`) and Chrome are present it also runs `tests/browser_check.js`: filters, recomputed totals and per-region rows, and the CSV export (quoting, BOM, formula guard). **Guard:** it refuses to run unless `aws` on PATH is the mock, and sets fake credentials and a dead endpoint.
+* `tests/run_tests.sh` - 500+ checks against `tests/mock/aws` (realistic fleet: Aurora PostgreSQL 11/12/14/15/16 incl. Extended Support, Aurora MySQL 3, RDS PostgreSQL 13/16/17, MySQL 8.0/8.4, MariaDB, SQL Server, Oracle, Multi-AZ DB cluster, DocumentDB, Neptune). Covers counting only from ValidUpgradeTarget (the mock's full list differs on purpose), major targets excluded, the default auto-upgrade target, current version not returned, pending-actions text, version compare units (`15.10 > 15.9`, Aurora MySQL, SQL Server, Oracle), the 2/3 boundary, `--max-behind`, lookup failure (UNKNOWN), deprecated version, lifecycle API missing / denied, multi-profile / multi-region, all regions, filters, outputs, alerts (local stubs), region discovery (empty regions skipped, cluster-only region, probe AccessDenied scanned anyway, `--no-discover`, `-r` without probe, parallel probes faster than serial with the same result, dry-run, `aws_calls`), the region breakdown adding up to the totals in every format, a 3000-instance fleet (no ARG_MAX issues), v1.3.0 `--save-data` / `--merge` (names, contents, read-only calls, zero AWS calls during merge, newer file wins, days recomputed, exit 3 inputs, Windows paths with spaces and a CRLF `jq` stub), and that no file is written into the tool folder. When node, `puppeteer-core` (on `NODE_PATH`) and Chrome are present it also runs `tests/browser_check.js`: filters, recomputed totals and per-region rows, and the CSV export (quoting, BOM, formula guard). **Guard:** it refuses to run unless `aws` on PATH is the mock, and sets fake credentials and a dead endpoint.
 * `tests/validate_cli.sh` - replays every command line the script issues through the **real** AWS CLI v2 with fake credentials and a dead endpoint (`127.0.0.1:9`); checks mock output shapes against `--generate-cli-skeleton output`; and runs the script with the real CLI against a local fake endpoint that pages every list (Marker) to prove pagination, and `-A` against a region-aware fake endpoint to prove each discovery probe is a single request, a denied probe becomes an error region that is still scanned, and only regions with databases get a full scan. A wrapper refuses any real-CLI call without a loopback endpoint.
 
 ## Changelog
+
+* **1.5.0** - HTML: Engine compliance table under the cards (collapsible majors, Show all majors, sortable, clickable counts, Filtered tag, sticky header); clickable, keyboard-focusable cards in a status row and a risk row with the active card highlighted; new **Flag** dropdown (Extended Support, support ending, auto minor off, pending, not returned) and **All global databases** option; per-engine pop-up on Non-compliant / Unknown; engine server sections collapsible (Expand all / Collapse all); CSV column picker remembered in localStorage; the old per engine and major version table is replaced by the engine table. Account names (config `ACCOUNTID = name` > `iam list-account-aliases` > number), `account_name` column at the end of CSV / JSON (28 CSV columns), text and merge. Mock and tests extended (browser checks, XSS via pop-up and account names).
 
 * **1.4.1** - Security fixes. HTML report: `compliance_status`, `next_maintenance`, `versions_behind` and `pending_actions_count` are now HTML-escaped, so a tampered `--merge` / `--save-data` file can no longer inject markup or script (stored XSS). In-page filters coerce the pending count to a number. The regression test renders a poisoned merge file in headless Chrome. Releases publish `rds-patch-compliance.zip.sha256`, and the README install verifies it with `sha256sum -c` before unzipping. The release workflow pins `actions/checkout` to a commit SHA and is read-only except for the publish job. The report output is otherwise unchanged.
 * **1.4.0** - Aurora global database awareness (read-only `rds describe-global-clusters`, once per account; failure = warning + global `unknown`): `global_cluster` / `global_role` columns at the end, row badge, **Global cluster** dropdown (incl. Not global), Global databases section (overall = worst member, `region status mismatch`, `NOT SCANNED` members, pending actions on the global ARN), `Global databases: N (M members)` in the header, cards and summary script (non-compliant list grouped by global database). `--save-data` adds `globals` / `global_lookup` (`schema_minor: 1`); older files still merge (global unknown). Removed from all displayed outputs: tag columns, `arn`, `upgrade_command` + Copy button, `note`; merge no longer unions tag columns; `-T` ignored with a warning. CSV is 27 columns.

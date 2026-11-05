@@ -1,20 +1,37 @@
 {
   "meta": {
     "script": "rds_patch_compliance_report.sh",
-    "version": "1.4.0",
-    "generated_utc": "2026-10-14 17:46 UTC",
-    "generated_local": "2026-10-14 23:16 IST",
+    "version": "1.5.0",
+    "generated_utc": "2026-11-05 12:21 UTC",
+    "generated_local": "2026-11-05 17:51 IST",
     "tz": "Asia/Kolkata",
     "host": "grok-bot-vm-256144679",
     "accounts": [
       {
         "account": "111111111111",
-        "profile": "prod"
+        "profile": "prod",
+        "name": "prod-core"
+      },
+      {
+        "account": "222222222222",
+        "profile": "nonprod",
+        "name": ""
       }
     ],
     "regions": [
+      "ap-northeast-1",
+      "ap-south-1",
+      "ap-southeast-1",
+      "ap-southeast-2",
+      "ca-central-1",
+      "eu-central-1",
+      "eu-north-1",
       "eu-west-1",
+      "eu-west-2",
+      "sa-east-1",
       "us-east-1",
+      "us-east-2",
+      "us-west-1",
       "us-west-2"
     ],
     "tag_columns": [],
@@ -26,81 +43,236 @@
     },
     "filters_text": "",
     "region_discovery": {
-      "mode": "explicit",
-      "probe_parallel": null
+      "mode": "discover",
+      "probe_parallel": 8
     },
     "region_status": [
       {
         "account": "111111111111",
         "profile": "prod",
-        "region": "us-east-1",
-        "status": "scanned"
+        "region": "ap-northeast-1",
+        "status": "empty",
+        "probe_instances": 0,
+        "probe_clusters": 0
       },
       {
         "account": "111111111111",
         "profile": "prod",
-        "region": "us-west-2",
-        "status": "scanned"
+        "region": "ap-south-1",
+        "status": "empty",
+        "probe_instances": 0,
+        "probe_clusters": 0
+      },
+      {
+        "account": "111111111111",
+        "profile": "prod",
+        "region": "ap-southeast-1",
+        "status": "empty",
+        "probe_instances": 0,
+        "probe_clusters": 0
+      },
+      {
+        "account": "111111111111",
+        "profile": "prod",
+        "region": "ap-southeast-2",
+        "status": "empty",
+        "probe_instances": 0,
+        "probe_clusters": 0
+      },
+      {
+        "account": "111111111111",
+        "profile": "prod",
+        "region": "ca-central-1",
+        "status": "probe-error",
+        "probe_instances": null,
+        "probe_clusters": 0
+      },
+      {
+        "account": "111111111111",
+        "profile": "prod",
+        "region": "eu-central-1",
+        "status": "empty",
+        "probe_instances": 0,
+        "probe_clusters": 0
+      },
+      {
+        "account": "111111111111",
+        "profile": "prod",
+        "region": "eu-north-1",
+        "status": "empty",
+        "probe_instances": 0,
+        "probe_clusters": 0
       },
       {
         "account": "111111111111",
         "profile": "prod",
         "region": "eu-west-1",
-        "status": "scanned"
-      }
-    ],
-    "globals": [
-      {
-        "account": "111111111111",
-        "id": "orders-global",
-        "arn": "arn:aws:rds::111111111111:global-cluster:orders-global",
-        "engine": "aurora-postgresql",
-        "version": "15.8",
-        "status": "available",
-        "members": [
-          {
-            "arn": "arn:aws:rds:us-east-1:111111111111:cluster:orders-aurora-pg15",
-            "region": "us-east-1",
-            "cluster": "orders-aurora-pg15",
-            "role": "primary"
-          },
-          {
-            "arn": "arn:aws:rds:us-west-2:111111111111:cluster:orders-dr-pg15",
-            "region": "us-west-2",
-            "cluster": "orders-dr-pg15",
-            "role": "secondary"
-          },
-          {
-            "arn": "arn:aws:rds:ap-northeast-1:111111111111:cluster:orders-dr-tokyo",
-            "region": "ap-northeast-1",
-            "cluster": "orders-dr-tokyo",
-            "role": "secondary"
-          }
-        ]
+        "status": "empty",
+        "probe_instances": 0,
+        "probe_clusters": 0
       },
       {
         "account": "111111111111",
-        "id": "shop-global",
-        "arn": "arn:aws:rds::111111111111:global-cluster:shop-global",
-        "engine": "aurora-mysql",
-        "version": "8.0.mysql_aurora.3.05.2",
-        "status": "available",
-        "members": [
-          {
-            "arn": "arn:aws:rds:us-east-1:111111111111:cluster:shop-aurora-mysql",
-            "region": "us-east-1",
-            "cluster": "shop-aurora-mysql",
-            "role": "primary"
-          },
-          {
-            "arn": "arn:aws:rds:eu-west-1:111111111111:cluster:shop-dr-mysql",
-            "region": "eu-west-1",
-            "cluster": "shop-dr-mysql",
-            "role": "secondary"
-          }
-        ]
+        "profile": "prod",
+        "region": "eu-west-2",
+        "status": "empty",
+        "probe_instances": 0,
+        "probe_clusters": 0
+      },
+      {
+        "account": "111111111111",
+        "profile": "prod",
+        "region": "sa-east-1",
+        "status": "empty",
+        "probe_instances": 0,
+        "probe_clusters": 0
+      },
+      {
+        "account": "111111111111",
+        "profile": "prod",
+        "region": "us-east-1",
+        "status": "databases",
+        "probe_instances": 20,
+        "probe_clusters": 11
+      },
+      {
+        "account": "111111111111",
+        "profile": "prod",
+        "region": "us-east-2",
+        "status": "empty",
+        "probe_instances": 0,
+        "probe_clusters": 0
+      },
+      {
+        "account": "111111111111",
+        "profile": "prod",
+        "region": "us-west-1",
+        "status": "empty",
+        "probe_instances": 0,
+        "probe_clusters": 0
+      },
+      {
+        "account": "111111111111",
+        "profile": "prod",
+        "region": "us-west-2",
+        "status": "databases",
+        "probe_instances": 0,
+        "probe_clusters": 1
+      },
+      {
+        "account": "222222222222",
+        "profile": "nonprod",
+        "region": "ap-northeast-1",
+        "status": "empty",
+        "probe_instances": 0,
+        "probe_clusters": 0
+      },
+      {
+        "account": "222222222222",
+        "profile": "nonprod",
+        "region": "ap-south-1",
+        "status": "databases",
+        "probe_instances": 3,
+        "probe_clusters": 1
+      },
+      {
+        "account": "222222222222",
+        "profile": "nonprod",
+        "region": "ap-southeast-1",
+        "status": "empty",
+        "probe_instances": 0,
+        "probe_clusters": 0
+      },
+      {
+        "account": "222222222222",
+        "profile": "nonprod",
+        "region": "ap-southeast-2",
+        "status": "empty",
+        "probe_instances": 0,
+        "probe_clusters": 0
+      },
+      {
+        "account": "222222222222",
+        "profile": "nonprod",
+        "region": "ca-central-1",
+        "status": "probe-error",
+        "probe_instances": null,
+        "probe_clusters": 0
+      },
+      {
+        "account": "222222222222",
+        "profile": "nonprod",
+        "region": "eu-central-1",
+        "status": "empty",
+        "probe_instances": 0,
+        "probe_clusters": 0
+      },
+      {
+        "account": "222222222222",
+        "profile": "nonprod",
+        "region": "eu-north-1",
+        "status": "empty",
+        "probe_instances": 0,
+        "probe_clusters": 0
+      },
+      {
+        "account": "222222222222",
+        "profile": "nonprod",
+        "region": "eu-west-1",
+        "status": "empty",
+        "probe_instances": 0,
+        "probe_clusters": 0
+      },
+      {
+        "account": "222222222222",
+        "profile": "nonprod",
+        "region": "eu-west-2",
+        "status": "empty",
+        "probe_instances": 0,
+        "probe_clusters": 0
+      },
+      {
+        "account": "222222222222",
+        "profile": "nonprod",
+        "region": "sa-east-1",
+        "status": "empty",
+        "probe_instances": 0,
+        "probe_clusters": 0
+      },
+      {
+        "account": "222222222222",
+        "profile": "nonprod",
+        "region": "us-east-1",
+        "status": "empty",
+        "probe_instances": 0,
+        "probe_clusters": 0
+      },
+      {
+        "account": "222222222222",
+        "profile": "nonprod",
+        "region": "us-east-2",
+        "status": "empty",
+        "probe_instances": 0,
+        "probe_clusters": 0
+      },
+      {
+        "account": "222222222222",
+        "profile": "nonprod",
+        "region": "us-west-1",
+        "status": "empty",
+        "probe_instances": 0,
+        "probe_clusters": 0
+      },
+      {
+        "account": "222222222222",
+        "profile": "nonprod",
+        "region": "us-west-2",
+        "status": "empty",
+        "probe_instances": 0,
+        "probe_clusters": 0
       }
     ],
+    "globals": [],
     "global_lookup": [
       {
         "account": "111111111111",
@@ -108,11 +280,19 @@
         "region": "us-east-1",
         "status": "ok",
         "message": "",
-        "count": 2
+        "count": 0
+      },
+      {
+        "account": "222222222222",
+        "profile": "nonprod",
+        "region": "us-east-1",
+        "status": "ok",
+        "message": "",
+        "count": 0
       }
     ],
-    "aws_calls": 39,
-    "aws_failures": 0,
+    "aws_calls": 109,
+    "aws_failures": 4,
     "lifecycle_api": true,
     "oracle_any_patch_line": false
   },
@@ -143,9 +323,9 @@
       "version_warnings": [],
       "compliance_status": "NON-COMPLIANT",
       "auto_minor_upgrade": "mixed",
-      "standard_support_end": "2029-04-16",
-      "extended_support_end": "2032-04-20",
-      "support_days_left": 914,
+      "standard_support_end": "2029-04-23",
+      "extended_support_end": "2032-04-27",
+      "support_days_left": 899,
       "support_flag": "ok",
       "past_standard_support": false,
       "nearing_end_of_support": false,
@@ -161,77 +341,14 @@
         "Application": "storefront"
       },
       "arn": "arn:aws:rds:us-east-1:111111111111:cluster:shop-aurora-mysql",
-      "global_pending_raw": [
-        {
-          "garn": "arn:aws:rds::111111111111:global-cluster:orders-global",
-          "d": [
-            {
-              "Action": "system-update",
-              "Description": "Aurora global database patch",
-              "AutoAppliedAfterDate": "2026-11-18T20:00:00+00:00",
-              "CurrentApplyDate": "2026-11-18T20:00:00+00:00"
-            }
-          ]
-        }
-      ],
-      "note": "auto minor upgrade is off on some members; Aurora global database shop-global (primary): automatic minor version upgrade does not apply to global database members; upgrade the secondary clusters first, then the primary, to the same version",
-      "next_maintenance": null,
-      "days_until_maintenance": null,
-      "global_cluster": "shop-global",
-      "global_role": "primary",
-      "global_arn": "arn:aws:rds::111111111111:global-cluster:shop-global"
-    },
-    {
-      "account_id": "111111111111",
-      "profile": "prod",
-      "region": "eu-west-1",
-      "resource_type": "aurora-cluster",
-      "identifier": "shop-dr-mysql",
-      "members": "shop-dr-mysql-1 (writer)",
-      "member_count": 1,
-      "engine": "aurora-mysql",
-      "major_version": "8.0",
-      "current_version": "8.0.mysql_aurora.3.05.2",
-      "latest_minor_version": "8.0.mysql_aurora.3.10.0",
-      "versions_behind": 5,
-      "newer_versions": [
-        "8.0.mysql_aurora.3.06.0",
-        "8.0.mysql_aurora.3.07.1",
-        "8.0.mysql_aurora.3.08.2",
-        "8.0.mysql_aurora.3.09.0",
-        "8.0.mysql_aurora.3.10.0"
-      ],
-      "default_auto_upgrade_target": "8.0.mysql_aurora.3.08.2",
-      "major_upgrade_targets": 0,
-      "excluded_targets": [],
-      "version_warnings": [],
-      "compliance_status": "NON-COMPLIANT",
-      "auto_minor_upgrade": "true",
-      "standard_support_end": "2029-04-16",
-      "extended_support_end": "2032-04-20",
-      "support_days_left": 914,
-      "support_flag": "ok",
-      "past_standard_support": false,
-      "nearing_end_of_support": false,
-      "deprecated_version": false,
-      "pending_actions_count": 0,
-      "pending_actions": "",
-      "pending_actions_detail": [],
-      "maint_window_utc": "sat:21:00-sat:21:30",
-      "maint_window_ist": "sun:02:30-sun:03:00",
-      "tags": {
-        "Environment": "dr",
-        "Owner": "shop",
-        "Application": "storefront"
-      },
-      "arn": "arn:aws:rds:eu-west-1:111111111111:cluster:shop-dr-mysql",
       "global_pending_raw": [],
-      "note": "Aurora global database shop-global (secondary): automatic minor version upgrade does not apply to global database members; upgrade the secondary clusters first, then the primary, to the same version",
+      "note": "auto minor upgrade is off on some members",
       "next_maintenance": null,
       "days_until_maintenance": null,
-      "global_cluster": "shop-global",
-      "global_role": "secondary",
-      "global_arn": "arn:aws:rds::111111111111:global-cluster:shop-global"
+      "account_name": "prod-core",
+      "global_cluster": "",
+      "global_role": "",
+      "global_arn": null
     },
     {
       "account_id": "111111111111",
@@ -255,9 +372,9 @@
       "version_warnings": [],
       "compliance_status": "COMPLIANT",
       "auto_minor_upgrade": "true",
-      "standard_support_end": "2029-04-16",
-      "extended_support_end": "2032-04-20",
-      "support_days_left": 914,
+      "standard_support_end": "2029-04-23",
+      "extended_support_end": "2032-04-27",
+      "support_days_left": 899,
       "support_flag": "ok",
       "past_standard_support": false,
       "nearing_end_of_support": false,
@@ -273,22 +390,66 @@
         "Application": "cms"
       },
       "arn": "arn:aws:rds:us-east-1:111111111111:cluster:cms-aurora-mysql",
-      "global_pending_raw": [
-        {
-          "garn": "arn:aws:rds::111111111111:global-cluster:orders-global",
-          "d": [
-            {
-              "Action": "system-update",
-              "Description": "Aurora global database patch",
-              "AutoAppliedAfterDate": "2026-11-18T20:00:00+00:00",
-              "CurrentApplyDate": "2026-11-18T20:00:00+00:00"
-            }
-          ]
-        }
-      ],
+      "global_pending_raw": [],
       "note": "",
       "next_maintenance": null,
       "days_until_maintenance": null,
+      "account_name": "prod-core",
+      "global_cluster": "",
+      "global_role": "",
+      "global_arn": null
+    },
+    {
+      "account_id": "222222222222",
+      "profile": "nonprod",
+      "region": "ap-south-1",
+      "resource_type": "aurora-cluster",
+      "identifier": "dev-aurora-pg15",
+      "members": "dev-pg15-1 (writer)",
+      "member_count": 1,
+      "engine": "aurora-postgresql",
+      "major_version": "15",
+      "current_version": "15.4",
+      "latest_minor_version": "15.13",
+      "versions_behind": 7,
+      "newer_versions": [
+        "15.5",
+        "15.6",
+        "15.7",
+        "15.8",
+        "15.10",
+        "15.12",
+        "15.13"
+      ],
+      "default_auto_upgrade_target": "15.12",
+      "major_upgrade_targets": 1,
+      "excluded_targets": [],
+      "version_warnings": [],
+      "compliance_status": "NON-COMPLIANT",
+      "auto_minor_upgrade": "true",
+      "standard_support_end": "2030-02-17",
+      "extended_support_end": "2033-02-21",
+      "support_days_left": 1199,
+      "support_flag": "ok",
+      "past_standard_support": false,
+      "nearing_end_of_support": false,
+      "deprecated_version": false,
+      "pending_actions_count": 0,
+      "pending_actions": "",
+      "pending_actions_detail": [],
+      "maint_window_utc": "sat:21:00-sat:21:30",
+      "maint_window_ist": "sun:02:30-sun:03:00",
+      "tags": {
+        "Environment": "dev",
+        "Owner": "platform",
+        "Application": "dev"
+      },
+      "arn": "arn:aws:rds:ap-south-1:222222222222:cluster:dev-aurora-pg15",
+      "global_pending_raw": [],
+      "note": "",
+      "next_maintenance": null,
+      "days_until_maintenance": null,
+      "account_name": "",
       "global_cluster": "",
       "global_role": "",
       "global_arn": null
@@ -320,9 +481,9 @@
       "version_warnings": [],
       "compliance_status": "NON-COMPLIANT",
       "auto_minor_upgrade": "true",
-      "standard_support_end": "2025-03-28",
-      "extended_support_end": "2029-01-06",
-      "support_days_left": -566,
+      "standard_support_end": "2025-04-04",
+      "extended_support_end": "2029-01-13",
+      "support_days_left": -581,
       "support_flag": "past standard support (Extended Support charges)",
       "past_standard_support": true,
       "nearing_end_of_support": false,
@@ -338,75 +499,14 @@
         "Application": "legacy-gl"
       },
       "arn": "arn:aws:rds:us-east-1:111111111111:cluster:legacy-aurora-pg12",
-      "global_pending_raw": [
-        {
-          "garn": "arn:aws:rds::111111111111:global-cluster:orders-global",
-          "d": [
-            {
-              "Action": "system-update",
-              "Description": "Aurora global database patch",
-              "AutoAppliedAfterDate": "2026-11-18T20:00:00+00:00",
-              "CurrentApplyDate": "2026-11-18T20:00:00+00:00"
-            }
-          ]
-        }
-      ],
+      "global_pending_raw": [],
       "note": "",
       "next_maintenance": null,
       "days_until_maintenance": null,
+      "account_name": "prod-core",
       "global_cluster": "",
       "global_role": "",
       "global_arn": null
-    },
-    {
-      "account_id": "111111111111",
-      "profile": "prod",
-      "region": "us-west-2",
-      "resource_type": "aurora-cluster",
-      "identifier": "orders-dr-pg15",
-      "members": "",
-      "member_count": 0,
-      "engine": "aurora-postgresql",
-      "major_version": "15",
-      "current_version": "15.8",
-      "latest_minor_version": "15.13",
-      "versions_behind": 3,
-      "newer_versions": [
-        "15.10",
-        "15.12",
-        "15.13"
-      ],
-      "default_auto_upgrade_target": "15.12",
-      "major_upgrade_targets": 2,
-      "excluded_targets": [],
-      "version_warnings": [],
-      "compliance_status": "NON-COMPLIANT",
-      "auto_minor_upgrade": "unknown",
-      "standard_support_end": "2030-02-10",
-      "extended_support_end": "2033-02-14",
-      "support_days_left": 1214,
-      "support_flag": "ok",
-      "past_standard_support": false,
-      "nearing_end_of_support": false,
-      "deprecated_version": false,
-      "pending_actions_count": 0,
-      "pending_actions": "",
-      "pending_actions_detail": [],
-      "maint_window_utc": "sat:21:00-sat:21:30",
-      "maint_window_ist": "sun:02:30-sun:03:00",
-      "tags": {
-        "Environment": "dr",
-        "Owner": "orders",
-        "Application": "orders"
-      },
-      "arn": "arn:aws:rds:us-west-2:111111111111:cluster:orders-dr-pg15",
-      "global_pending_raw": [],
-      "note": "Aurora global database orders-global (secondary): automatic minor version upgrade does not apply to global database members; Aurora PostgreSQL: modify-global-cluster upgrades every member in one managed minor upgrade",
-      "next_maintenance": null,
-      "days_until_maintenance": null,
-      "global_cluster": "orders-global",
-      "global_role": "secondary",
-      "global_arn": "arn:aws:rds::111111111111:global-cluster:orders-global"
     },
     {
       "account_id": "111111111111",
@@ -432,9 +532,9 @@
       "version_warnings": [],
       "compliance_status": "NON-COMPLIANT",
       "auto_minor_upgrade": "false",
-      "standard_support_end": "2029-01-06",
-      "extended_support_end": "2032-01-11",
-      "support_days_left": 814,
+      "standard_support_end": "2029-01-13",
+      "extended_support_end": "2032-01-18",
+      "support_days_left": 799,
       "support_flag": "ok",
       "past_standard_support": false,
       "nearing_end_of_support": false,
@@ -450,22 +550,11 @@
         "Application": "reports"
       },
       "arn": "arn:aws:rds:us-east-1:111111111111:cluster:reports-aurora-pg14",
-      "global_pending_raw": [
-        {
-          "garn": "arn:aws:rds::111111111111:global-cluster:orders-global",
-          "d": [
-            {
-              "Action": "system-update",
-              "Description": "Aurora global database patch",
-              "AutoAppliedAfterDate": "2026-11-18T20:00:00+00:00",
-              "CurrentApplyDate": "2026-11-18T20:00:00+00:00"
-            }
-          ]
-        }
-      ],
+      "global_pending_raw": [],
       "note": "auto minor upgrade is off",
       "next_maintenance": null,
       "days_until_maintenance": null,
+      "account_name": "prod-core",
       "global_cluster": "",
       "global_role": "",
       "global_arn": null
@@ -490,9 +579,9 @@
       "version_warnings": [],
       "compliance_status": "UNKNOWN",
       "auto_minor_upgrade": "true",
-      "standard_support_end": "2025-03-08",
-      "extended_support_end": "2028-03-12",
-      "support_days_left": -586,
+      "standard_support_end": "2025-03-15",
+      "extended_support_end": "2028-03-19",
+      "support_days_left": -601,
       "support_flag": "past standard support (Extended Support charges)",
       "past_standard_support": true,
       "nearing_end_of_support": false,
@@ -508,22 +597,11 @@
         "Application": "archive"
       },
       "arn": "arn:aws:rds:us-east-1:111111111111:cluster:old-aurora-pg11",
-      "global_pending_raw": [
-        {
-          "garn": "arn:aws:rds::111111111111:global-cluster:orders-global",
-          "d": [
-            {
-              "Action": "system-update",
-              "Description": "Aurora global database patch",
-              "AutoAppliedAfterDate": "2026-11-18T20:00:00+00:00",
-              "CurrentApplyDate": "2026-11-18T20:00:00+00:00"
-            }
-          ]
-        }
-      ],
+      "global_pending_raw": [],
       "note": "current version not returned by describe-db-engine-versions (deprecated or not offered in us-east-1); no valid upgrade targets known",
       "next_maintenance": null,
       "days_until_maintenance": null,
+      "account_name": "prod-core",
       "global_cluster": "",
       "global_role": "",
       "global_arn": null
@@ -551,9 +629,9 @@
       "version_warnings": [],
       "compliance_status": "COMPLIANT",
       "auto_minor_upgrade": "true",
-      "standard_support_end": "2030-02-10",
-      "extended_support_end": "2033-02-14",
-      "support_days_left": 1214,
+      "standard_support_end": "2030-02-17",
+      "extended_support_end": "2033-02-21",
+      "support_days_left": 1199,
       "support_flag": "ok",
       "past_standard_support": false,
       "nearing_end_of_support": false,
@@ -569,22 +647,61 @@
         "Application": "crm"
       },
       "arn": "arn:aws:rds:us-east-1:111111111111:cluster:crm-aurora-pg15",
-      "global_pending_raw": [
-        {
-          "garn": "arn:aws:rds::111111111111:global-cluster:orders-global",
-          "d": [
-            {
-              "Action": "system-update",
-              "Description": "Aurora global database patch",
-              "AutoAppliedAfterDate": "2026-11-18T20:00:00+00:00",
-              "CurrentApplyDate": "2026-11-18T20:00:00+00:00"
-            }
-          ]
-        }
-      ],
+      "global_pending_raw": [],
       "note": "",
       "next_maintenance": null,
       "days_until_maintenance": null,
+      "account_name": "prod-core",
+      "global_cluster": "",
+      "global_role": "",
+      "global_arn": null
+    },
+    {
+      "account_id": "111111111111",
+      "profile": "prod",
+      "region": "us-west-2",
+      "resource_type": "aurora-cluster",
+      "identifier": "dr-aurora-pg15",
+      "members": "",
+      "member_count": 0,
+      "engine": "aurora-postgresql",
+      "major_version": "15",
+      "current_version": "15.10",
+      "latest_minor_version": "15.13",
+      "versions_behind": 2,
+      "newer_versions": [
+        "15.12",
+        "15.13"
+      ],
+      "default_auto_upgrade_target": null,
+      "major_upgrade_targets": 0,
+      "excluded_targets": [],
+      "version_warnings": [],
+      "compliance_status": "COMPLIANT",
+      "auto_minor_upgrade": "unknown",
+      "standard_support_end": "2030-02-17",
+      "extended_support_end": "2033-02-21",
+      "support_days_left": 1199,
+      "support_flag": "ok",
+      "past_standard_support": false,
+      "nearing_end_of_support": false,
+      "deprecated_version": false,
+      "pending_actions_count": 0,
+      "pending_actions": "",
+      "pending_actions_detail": [],
+      "maint_window_utc": "sat:21:00-sat:21:30",
+      "maint_window_ist": "sun:02:30-sun:03:00",
+      "tags": {
+        "Environment": "dr",
+        "Owner": "orders",
+        "Application": "orders-dr"
+      },
+      "arn": "arn:aws:rds:us-west-2:111111111111:cluster:dr-aurora-pg15",
+      "global_pending_raw": [],
+      "note": "",
+      "next_maintenance": null,
+      "days_until_maintenance": null,
+      "account_name": "prod-core",
       "global_cluster": "",
       "global_role": "",
       "global_arn": null
@@ -612,31 +729,31 @@
       "version_warnings": [],
       "compliance_status": "COMPLIANT",
       "auto_minor_upgrade": "true",
-      "standard_support_end": "2030-02-10",
-      "extended_support_end": "2033-02-14",
-      "support_days_left": 1214,
+      "standard_support_end": "2030-02-17",
+      "extended_support_end": "2033-02-21",
+      "support_days_left": 1199,
       "support_flag": "ok",
       "past_standard_support": false,
       "nearing_end_of_support": false,
       "deprecated_version": false,
-      "pending_actions_count": 3,
-      "pending_actions": "system-update on cluster (auto-apply 2026-11-15, forced 2026-12-15) - Upgrade to Aurora PostgreSQL 15.8.1 patch; os-upgrade on member orders-pg15-2 (opt-in: next-maintenance) - New Operating System update is available; system-update on global orders-global (auto-apply 2026-11-18) - Aurora global database patch",
+      "pending_actions_count": 2,
+      "pending_actions": "system-update on cluster (auto-apply 2026-11-22, forced 2026-12-22) - Upgrade to Aurora PostgreSQL 15.8.1 patch; os-upgrade on member orders-pg15-2 (opt-in: next-maintenance) - New Operating System update is available",
       "pending_actions_detail": [
         {
           "action": "system-update",
           "on": "cluster",
           "description": "Upgrade to Aurora PostgreSQL 15.8.1 patch",
           "opt_in_status": "",
-          "auto_applied_after": "2026-11-15",
-          "forced_apply": "2026-12-15",
-          "current_apply": "2026-11-15",
-          "auto_applied_after_ist": "2026-11-16 01:30 IST",
-          "forced_apply_ist": "2026-12-16 01:30 IST",
-          "auto_applied_after_utc": "2026-11-15 20:00 UTC",
-          "forced_apply_utc": "2026-12-15 20:00 UTC",
-          "text": "system-update on cluster (auto-apply 2026-11-15, forced 2026-12-15) - Upgrade to Aurora PostgreSQL 15.8.1 patch",
-          "next_date": "2026-11-15",
-          "days_until": 31
+          "auto_applied_after": "2026-11-22",
+          "forced_apply": "2026-12-22",
+          "current_apply": "2026-11-22",
+          "auto_applied_after_ist": "2026-11-23 01:30 IST",
+          "forced_apply_ist": "2026-12-23 01:30 IST",
+          "auto_applied_after_utc": "2026-11-22 20:00 UTC",
+          "forced_apply_utc": "2026-12-22 20:00 UTC",
+          "text": "system-update on cluster (auto-apply 2026-11-22, forced 2026-12-22) - Upgrade to Aurora PostgreSQL 15.8.1 patch",
+          "next_date": "2026-11-22",
+          "days_until": 16
         },
         {
           "action": "os-upgrade",
@@ -645,28 +762,14 @@
           "opt_in_status": "next-maintenance",
           "auto_applied_after": null,
           "forced_apply": null,
-          "current_apply": "2026-11-05",
+          "current_apply": "2026-11-12",
           "auto_applied_after_ist": null,
           "forced_apply_ist": null,
           "auto_applied_after_utc": null,
           "forced_apply_utc": null,
           "text": "os-upgrade on member orders-pg15-2 (opt-in: next-maintenance) - New Operating System update is available",
-          "next_date": "2026-11-05",
-          "days_until": 21
-        },
-        {
-          "action": "system-update",
-          "on": "global orders-global",
-          "description": "Aurora global database patch",
-          "opt_in_status": "",
-          "auto_applied_after": "2026-11-18",
-          "forced_apply": null,
-          "current_apply": "2026-11-18",
-          "auto_applied_after_ist": "2026-11-19 01:30 IST",
-          "forced_apply_ist": null,
-          "auto_applied_after_utc": "2026-11-18 20:00 UTC",
-          "forced_apply_utc": null,
-          "text": "system-update on global orders-global (auto-apply 2026-11-18) - Aurora global database patch"
+          "next_date": "2026-11-12",
+          "days_until": 6
         }
       ],
       "maint_window_utc": "sat:21:00-sat:21:30",
@@ -677,25 +780,14 @@
         "Application": "orders"
       },
       "arn": "arn:aws:rds:us-east-1:111111111111:cluster:orders-aurora-pg15",
-      "global_pending_raw": [
-        {
-          "garn": "arn:aws:rds::111111111111:global-cluster:orders-global",
-          "d": [
-            {
-              "Action": "system-update",
-              "Description": "Aurora global database patch",
-              "AutoAppliedAfterDate": "2026-11-18T20:00:00+00:00",
-              "CurrentApplyDate": "2026-11-18T20:00:00+00:00"
-            }
-          ]
-        }
-      ],
-      "note": "Aurora global database orders-global (primary): automatic minor version upgrade does not apply to global database members; Aurora PostgreSQL: modify-global-cluster upgrades every member in one managed minor upgrade",
-      "next_maintenance": "2026-11-05",
-      "days_until_maintenance": 21,
-      "global_cluster": "orders-global",
-      "global_role": "primary",
-      "global_arn": "arn:aws:rds::111111111111:global-cluster:orders-global"
+      "global_pending_raw": [],
+      "note": "",
+      "next_maintenance": "2026-11-12",
+      "days_until_maintenance": 6,
+      "account_name": "prod-core",
+      "global_cluster": "",
+      "global_role": "",
+      "global_arn": null
     },
     {
       "account_id": "111111111111",
@@ -717,9 +809,9 @@
       "version_warnings": [],
       "compliance_status": "COMPLIANT",
       "auto_minor_upgrade": "true",
-      "standard_support_end": "2030-12-07",
-      "extended_support_end": "2033-12-11",
-      "support_days_left": 1514,
+      "standard_support_end": "2030-12-14",
+      "extended_support_end": "2033-12-18",
+      "support_days_left": 1499,
       "support_flag": "ok",
       "past_standard_support": false,
       "nearing_end_of_support": false,
@@ -735,22 +827,11 @@
         "Application": "pay"
       },
       "arn": "arn:aws:rds:us-east-1:111111111111:cluster:pay-aurora-pg16",
-      "global_pending_raw": [
-        {
-          "garn": "arn:aws:rds::111111111111:global-cluster:orders-global",
-          "d": [
-            {
-              "Action": "system-update",
-              "Description": "Aurora global database patch",
-              "AutoAppliedAfterDate": "2026-11-18T20:00:00+00:00",
-              "CurrentApplyDate": "2026-11-18T20:00:00+00:00"
-            }
-          ]
-        }
-      ],
+      "global_pending_raw": [],
       "note": "",
       "next_maintenance": null,
       "days_until_maintenance": null,
+      "account_name": "prod-core",
       "global_cluster": "",
       "global_role": "",
       "global_arn": null
@@ -783,23 +864,23 @@
       "nearing_end_of_support": false,
       "deprecated_version": false,
       "pending_actions_count": 1,
-      "pending_actions": "system-update on member catalog-docdb-2 (auto-apply 2026-11-28, forced 2026-12-28) - Upgrades to the DocumentDB engine",
+      "pending_actions": "system-update on member catalog-docdb-2 (auto-apply 2026-12-05, forced 2027-01-04) - Upgrades to the DocumentDB engine",
       "pending_actions_detail": [
         {
           "action": "system-update",
           "on": "member catalog-docdb-2",
           "description": "Upgrades to the DocumentDB engine",
           "opt_in_status": "",
-          "auto_applied_after": "2026-11-28",
-          "forced_apply": "2026-12-28",
-          "current_apply": "2026-11-28",
-          "auto_applied_after_ist": "2026-11-29 01:30 IST",
-          "forced_apply_ist": "2026-12-29 01:30 IST",
-          "auto_applied_after_utc": "2026-11-28 20:00 UTC",
-          "forced_apply_utc": "2026-12-28 20:00 UTC",
-          "text": "system-update on member catalog-docdb-2 (auto-apply 2026-11-28, forced 2026-12-28) - Upgrades to the DocumentDB engine",
-          "next_date": "2026-11-28",
-          "days_until": 44
+          "auto_applied_after": "2026-12-05",
+          "forced_apply": "2027-01-04",
+          "current_apply": "2026-12-05",
+          "auto_applied_after_ist": "2026-12-06 01:30 IST",
+          "forced_apply_ist": "2027-01-05 01:30 IST",
+          "auto_applied_after_utc": "2026-12-05 20:00 UTC",
+          "forced_apply_utc": "2027-01-04 20:00 UTC",
+          "text": "system-update on member catalog-docdb-2 (auto-apply 2026-12-05, forced 2027-01-04) - Upgrades to the DocumentDB engine",
+          "next_date": "2026-12-05",
+          "days_until": 29
         }
       ],
       "maint_window_utc": "sat:21:00-sat:21:30",
@@ -812,8 +893,59 @@
       "arn": "arn:aws:rds:us-east-1:111111111111:cluster:catalog-docdb",
       "global_pending_raw": [],
       "note": "",
-      "next_maintenance": "2026-11-28",
-      "days_until_maintenance": 44,
+      "next_maintenance": "2026-12-05",
+      "days_until_maintenance": 29,
+      "account_name": "prod-core",
+      "global_cluster": "",
+      "global_role": "",
+      "global_arn": null
+    },
+    {
+      "account_id": "222222222222",
+      "profile": "nonprod",
+      "region": "ap-south-1",
+      "resource_type": "instance",
+      "identifier": "dev-mariadb",
+      "members": "",
+      "member_count": 0,
+      "engine": "mariadb",
+      "major_version": "10.11",
+      "current_version": "10.11.9",
+      "latest_minor_version": "10.11.11",
+      "versions_behind": 2,
+      "newer_versions": [
+        "10.11.10",
+        "10.11.11"
+      ],
+      "default_auto_upgrade_target": null,
+      "major_upgrade_targets": 0,
+      "excluded_targets": [],
+      "version_warnings": [],
+      "compliance_status": "COMPLIANT",
+      "auto_minor_upgrade": "true",
+      "standard_support_end": "2029-08-01",
+      "extended_support_end": null,
+      "support_days_left": 999,
+      "support_flag": "ok",
+      "past_standard_support": false,
+      "nearing_end_of_support": false,
+      "deprecated_version": false,
+      "pending_actions_count": 0,
+      "pending_actions": "",
+      "pending_actions_detail": [],
+      "maint_window_utc": "sun:20:00-sun:20:30",
+      "maint_window_ist": "mon:01:30-mon:02:00",
+      "tags": {
+        "Environment": "dev",
+        "Owner": "platform",
+        "Application": "dev"
+      },
+      "arn": "arn:aws:rds:ap-south-1:222222222222:db:dev-mariadb",
+      "global_pending_raw": [],
+      "note": "",
+      "next_maintenance": null,
+      "days_until_maintenance": null,
+      "account_name": "",
       "global_cluster": "",
       "global_role": "",
       "global_arn": null
@@ -845,31 +977,31 @@
       "version_warnings": [],
       "compliance_status": "NON-COMPLIANT",
       "auto_minor_upgrade": "false",
-      "standard_support_end": "2027-04-17",
-      "extended_support_end": "2030-04-11",
-      "support_days_left": 184,
-      "support_flag": "ok",
+      "standard_support_end": "2027-04-24",
+      "extended_support_end": "2030-04-18",
+      "support_days_left": 169,
+      "support_flag": "standard support ends in 169 days",
       "past_standard_support": false,
-      "nearing_end_of_support": false,
+      "nearing_end_of_support": true,
       "deprecated_version": false,
       "pending_actions_count": 2,
-      "pending_actions": "db-upgrade (auto-apply 2026-11-08) - Automatic minor version upgrade to 8.0.40; os-upgrade (no date, optional) - New Operating System update is available; it includes sec...",
+      "pending_actions": "db-upgrade (auto-apply 2026-11-15) - Automatic minor version upgrade to 8.0.40; os-upgrade (no date, optional) - New Operating System update is available; it includes sec...",
       "pending_actions_detail": [
         {
           "action": "db-upgrade",
           "on": "",
           "description": "Automatic minor version upgrade to 8.0.40",
           "opt_in_status": "",
-          "auto_applied_after": "2026-11-08",
+          "auto_applied_after": "2026-11-15",
           "forced_apply": null,
-          "current_apply": "2026-11-08",
-          "auto_applied_after_ist": "2026-11-09 01:30 IST",
+          "current_apply": "2026-11-15",
+          "auto_applied_after_ist": "2026-11-16 01:30 IST",
           "forced_apply_ist": null,
-          "auto_applied_after_utc": "2026-11-08 20:00 UTC",
+          "auto_applied_after_utc": "2026-11-15 20:00 UTC",
           "forced_apply_utc": null,
-          "text": "db-upgrade (auto-apply 2026-11-08) - Automatic minor version upgrade to 8.0.40",
-          "next_date": "2026-11-08",
-          "days_until": 24
+          "text": "db-upgrade (auto-apply 2026-11-15) - Automatic minor version upgrade to 8.0.40",
+          "next_date": "2026-11-15",
+          "days_until": 9
         },
         {
           "action": "os-upgrade",
@@ -898,8 +1030,9 @@
       "arn": "arn:aws:rds:us-east-1:111111111111:db:inv-mysql",
       "global_pending_raw": [],
       "note": "auto minor upgrade is off",
-      "next_maintenance": "2026-11-08",
-      "days_until_maintenance": 24,
+      "next_maintenance": "2026-11-15",
+      "days_until_maintenance": 9,
+      "account_name": "prod-core",
       "global_cluster": "",
       "global_role": "",
       "global_arn": null
@@ -924,9 +1057,9 @@
       "version_warnings": [],
       "compliance_status": "COMPLIANT",
       "auto_minor_upgrade": "true",
-      "standard_support_end": "2032-04-20",
-      "extended_support_end": "2035-04-25",
-      "support_days_left": 2014,
+      "standard_support_end": "2032-04-27",
+      "extended_support_end": "2035-05-02",
+      "support_days_left": 1999,
       "support_flag": "ok",
       "past_standard_support": false,
       "nearing_end_of_support": false,
@@ -946,6 +1079,7 @@
       "note": "",
       "next_maintenance": null,
       "days_until_maintenance": null,
+      "account_name": "prod-core",
       "global_cluster": "",
       "global_role": "",
       "global_arn": null
@@ -995,6 +1129,7 @@
       "note": "",
       "next_maintenance": null,
       "days_until_maintenance": null,
+      "account_name": "prod-core",
       "global_cluster": "",
       "global_role": "",
       "global_arn": null
@@ -1044,6 +1179,7 @@
       "note": "",
       "next_maintenance": null,
       "days_until_maintenance": null,
+      "account_name": "prod-core",
       "global_cluster": "",
       "global_role": "",
       "global_arn": null
@@ -1072,10 +1208,10 @@
       "version_warnings": [],
       "compliance_status": "NON-COMPLIANT",
       "auto_minor_upgrade": "true",
-      "standard_support_end": "2027-02-26",
-      "extended_support_end": "2030-02-10",
-      "support_days_left": 134,
-      "support_flag": "standard support ends in 134 days",
+      "standard_support_end": "2027-03-05",
+      "extended_support_end": "2030-02-17",
+      "support_days_left": 119,
+      "support_flag": "standard support ends in 119 days",
       "past_standard_support": false,
       "nearing_end_of_support": true,
       "deprecated_version": false,
@@ -1094,6 +1230,7 @@
       "note": "",
       "next_maintenance": null,
       "days_until_maintenance": null,
+      "account_name": "prod-core",
       "global_cluster": "",
       "global_role": "",
       "global_arn": null
@@ -1122,9 +1259,9 @@
       "version_warnings": [],
       "compliance_status": "NON-COMPLIANT",
       "auto_minor_upgrade": "true",
-      "standard_support_end": "2030-12-07",
-      "extended_support_end": "2033-12-11",
-      "support_days_left": 1514,
+      "standard_support_end": "2030-12-14",
+      "extended_support_end": "2033-12-18",
+      "support_days_left": 1499,
       "support_flag": "ok",
       "past_standard_support": false,
       "nearing_end_of_support": false,
@@ -1144,6 +1281,7 @@
       "note": "",
       "next_maintenance": null,
       "days_until_maintenance": null,
+      "account_name": "prod-core",
       "global_cluster": "",
       "global_role": "",
       "global_arn": null
@@ -1171,9 +1309,9 @@
       "version_warnings": [],
       "compliance_status": "COMPLIANT",
       "auto_minor_upgrade": "true",
-      "standard_support_end": "2030-12-07",
-      "extended_support_end": "2033-12-11",
-      "support_days_left": 1514,
+      "standard_support_end": "2030-12-14",
+      "extended_support_end": "2033-12-18",
+      "support_days_left": 1499,
       "support_flag": "ok",
       "past_standard_support": false,
       "nearing_end_of_support": false,
@@ -1193,6 +1331,7 @@
       "note": "",
       "next_maintenance": null,
       "days_until_maintenance": null,
+      "account_name": "prod-core",
       "global_cluster": "",
       "global_role": "",
       "global_arn": null
@@ -1220,9 +1359,9 @@
       "version_warnings": [],
       "compliance_status": "COMPLIANT",
       "auto_minor_upgrade": "true",
-      "standard_support_end": "2030-12-07",
-      "extended_support_end": "2033-12-11",
-      "support_days_left": 1514,
+      "standard_support_end": "2030-12-14",
+      "extended_support_end": "2033-12-18",
+      "support_days_left": 1499,
       "support_flag": "ok",
       "past_standard_support": false,
       "nearing_end_of_support": false,
@@ -1242,6 +1381,57 @@
       "note": "",
       "next_maintenance": null,
       "days_until_maintenance": null,
+      "account_name": "prod-core",
+      "global_cluster": "",
+      "global_role": "",
+      "global_arn": null
+    },
+    {
+      "account_id": "222222222222",
+      "profile": "nonprod",
+      "region": "ap-south-1",
+      "resource_type": "instance",
+      "identifier": "qa-pg",
+      "members": "",
+      "member_count": 0,
+      "engine": "postgres",
+      "major_version": "17",
+      "current_version": "17.4",
+      "latest_minor_version": "17.6",
+      "versions_behind": 2,
+      "newer_versions": [
+        "17.5",
+        "17.6"
+      ],
+      "default_auto_upgrade_target": null,
+      "major_upgrade_targets": 0,
+      "excluded_targets": [],
+      "version_warnings": [],
+      "compliance_status": "COMPLIANT",
+      "auto_minor_upgrade": "true",
+      "standard_support_end": "2031-10-10",
+      "extended_support_end": "2034-10-14",
+      "support_days_left": 1799,
+      "support_flag": "ok",
+      "past_standard_support": false,
+      "nearing_end_of_support": false,
+      "deprecated_version": false,
+      "pending_actions_count": 0,
+      "pending_actions": "",
+      "pending_actions_detail": [],
+      "maint_window_utc": "sun:20:00-sun:20:30",
+      "maint_window_ist": "mon:01:30-mon:02:00",
+      "tags": {
+        "Environment": "qa",
+        "Owner": "platform",
+        "Application": "qa"
+      },
+      "arn": "arn:aws:rds:ap-south-1:222222222222:db:qa-pg",
+      "global_pending_raw": [],
+      "note": "",
+      "next_maintenance": null,
+      "days_until_maintenance": null,
+      "account_name": "",
       "global_cluster": "",
       "global_role": "",
       "global_arn": null
@@ -1292,6 +1482,7 @@
       "note": "",
       "next_maintenance": null,
       "days_until_maintenance": null,
+      "account_name": "prod-core",
       "global_cluster": "",
       "global_role": "",
       "global_arn": null
@@ -1340,133 +1531,66 @@
       "note": "",
       "next_maintenance": null,
       "days_until_maintenance": null,
+      "account_name": "prod-core",
       "global_cluster": "",
       "global_role": "",
       "global_arn": null
     }
   ],
-  "errors": [],
+  "errors": [
+    {
+      "account": "111111111111",
+      "profile": "prod",
+      "region": "ca-central-1",
+      "call": "rds describe-db-instances (discovery probe)",
+      "message": "An error occurred (AccessDenied) when calling the DescribeDBInstances operation: User: arn:aws:iam::111111111111:user/dba is not authorized to perform: rds:DescribeDBInstances with an explicit deny in a service control policy (region scanned in full anyway)"
+    },
+    {
+      "account": "111111111111",
+      "profile": "prod",
+      "region": "ca-central-1",
+      "call": "rds describe-db-instances",
+      "message": "An error occurred (AccessDenied) when calling the DescribeDBInstances operation: User: arn:aws:iam::111111111111:user/dba is not authorized to perform: rds:DescribeDBInstances with an explicit deny in a service control policy"
+    },
+    {
+      "account": "222222222222",
+      "profile": "nonprod",
+      "region": "ca-central-1",
+      "call": "rds describe-db-instances (discovery probe)",
+      "message": "An error occurred (AccessDenied) when calling the DescribeDBInstances operation: User: arn:aws:iam::222222222222:user/dba is not authorized to perform: rds:DescribeDBInstances with an explicit deny in a service control policy (region scanned in full anyway)"
+    },
+    {
+      "account": "222222222222",
+      "profile": "nonprod",
+      "region": "ca-central-1",
+      "call": "rds describe-db-instances",
+      "message": "An error occurred (AccessDenied) when calling the DescribeDBInstances operation: User: arn:aws:iam::222222222222:user/dba is not authorized to perform: rds:DescribeDBInstances with an explicit deny in a service control policy"
+    }
+  ],
   "summary": {
-    "total": 21,
-    "compliant": 11,
-    "non_compliant": 9,
+    "total": 23,
+    "compliant": 14,
+    "non_compliant": 8,
     "unknown": 1,
-    "pct_compliant": 52.4,
-    "shown": 21,
+    "pct_compliant": 60.9,
+    "shown": 23,
     "max_behind": 2,
     "warn_days": 180,
     "past_standard_support": 2,
-    "nearing_end_of_support": 1,
+    "nearing_end_of_support": 2,
     "auto_minor_off": 3,
     "with_pending": 3,
-    "pending_total": 6,
+    "pending_total": 5,
     "pending_by_action": {
-      "system-update": 3,
       "os-upgrade": 2,
+      "system-update": 2,
       "db-upgrade": 1
     },
     "deprecated": 1,
-    "errors": 0,
-    "globals": [
-      {
-        "account_id": "111111111111",
-        "global_cluster": "orders-global",
-        "engine": "aurora-postgresql",
-        "global_status": "available",
-        "members": [
-          {
-            "account_id": "111111111111",
-            "region": "us-east-1",
-            "identifier": "orders-aurora-pg15",
-            "role": "primary",
-            "current_version": "15.8",
-            "latest_minor_version": "15.12",
-            "versions_behind": 2,
-            "compliance_status": "COMPLIANT",
-            "headless": false,
-            "scanned": true
-          },
-          {
-            "account_id": "111111111111",
-            "region": "ap-northeast-1",
-            "identifier": "orders-dr-tokyo",
-            "role": "secondary",
-            "current_version": null,
-            "latest_minor_version": null,
-            "versions_behind": null,
-            "compliance_status": "NOT SCANNED",
-            "headless": null,
-            "scanned": false
-          },
-          {
-            "account_id": "111111111111",
-            "region": "us-west-2",
-            "identifier": "orders-dr-pg15",
-            "role": "secondary",
-            "current_version": "15.8",
-            "latest_minor_version": "15.13",
-            "versions_behind": 3,
-            "compliance_status": "NON-COMPLIANT",
-            "headless": true,
-            "scanned": true
-          }
-        ],
-        "member_count": 2,
-        "not_scanned": 1,
-        "overall_status": "NON-COMPLIANT",
-        "versions": [
-          "15.8"
-        ],
-        "version_differs": false,
-        "region_status_mismatch": true,
-        "pending": [
-          "system-update on global orders-global (auto-apply 2026-11-18) - Aurora global database patch"
-        ]
-      },
-      {
-        "account_id": "111111111111",
-        "global_cluster": "shop-global",
-        "engine": "aurora-mysql",
-        "global_status": "available",
-        "members": [
-          {
-            "account_id": "111111111111",
-            "region": "us-east-1",
-            "identifier": "shop-aurora-mysql",
-            "role": "primary",
-            "current_version": "8.0.mysql_aurora.3.05.2",
-            "latest_minor_version": "8.0.mysql_aurora.3.10.0",
-            "versions_behind": 5,
-            "compliance_status": "NON-COMPLIANT",
-            "headless": false,
-            "scanned": true
-          },
-          {
-            "account_id": "111111111111",
-            "region": "eu-west-1",
-            "identifier": "shop-dr-mysql",
-            "role": "secondary",
-            "current_version": "8.0.mysql_aurora.3.05.2",
-            "latest_minor_version": "8.0.mysql_aurora.3.10.0",
-            "versions_behind": 5,
-            "compliance_status": "NON-COMPLIANT",
-            "headless": false,
-            "scanned": true
-          }
-        ],
-        "member_count": 2,
-        "not_scanned": 0,
-        "overall_status": "NON-COMPLIANT",
-        "versions": [
-          "8.0.mysql_aurora.3.05.2"
-        ],
-        "version_differs": false,
-        "region_status_mismatch": false,
-        "pending": []
-      }
-    ],
-    "global_databases": 2,
-    "global_members": 4,
+    "errors": 4,
+    "globals": [],
+    "global_databases": 0,
+    "global_members": 0,
     "global_unknown": 0,
     "global_lookup": [
       {
@@ -1475,36 +1599,26 @@
         "region": "us-east-1",
         "status": "ok",
         "message": "",
-        "count": 2
+        "count": 0
+      },
+      {
+        "account": "222222222222",
+        "profile": "nonprod",
+        "region": "us-east-1",
+        "status": "ok",
+        "message": "",
+        "count": 0
       }
     ],
     "regions": [
       {
         "account_id": "111111111111",
         "profile": "prod",
-        "region": "eu-west-1",
-        "status": "databases",
-        "skipped": false,
-        "probe_instances": null,
-        "probe_clusters": null,
-        "errors": 0,
-        "total": 1,
-        "compliant": 0,
-        "non_compliant": 1,
-        "unknown": 0,
-        "pct_compliant": 0,
-        "with_pending": 0,
-        "pending_total": 0,
-        "past_standard_support": 0
-      },
-      {
-        "account_id": "111111111111",
-        "profile": "prod",
         "region": "us-east-1",
         "status": "databases",
         "skipped": false,
-        "probe_instances": null,
-        "probe_clusters": null,
+        "probe_instances": 20,
+        "probe_clusters": 11,
         "errors": 0,
         "total": 19,
         "compliant": 11,
@@ -1512,8 +1626,9 @@
         "unknown": 1,
         "pct_compliant": 57.9,
         "with_pending": 3,
-        "pending_total": 6,
-        "past_standard_support": 2
+        "pending_total": 5,
+        "past_standard_support": 2,
+        "account_name": "prod-core"
       },
       {
         "account_id": "111111111111",
@@ -1521,35 +1636,548 @@
         "region": "us-west-2",
         "status": "databases",
         "skipped": false,
-        "probe_instances": null,
-        "probe_clusters": null,
+        "probe_instances": 0,
+        "probe_clusters": 1,
         "errors": 0,
         "total": 1,
-        "compliant": 0,
-        "non_compliant": 1,
+        "compliant": 1,
+        "non_compliant": 0,
         "unknown": 0,
-        "pct_compliant": 0,
+        "pct_compliant": 100,
         "with_pending": 0,
         "pending_total": 0,
-        "past_standard_support": 0
+        "past_standard_support": 0,
+        "account_name": "prod-core"
+      },
+      {
+        "account_id": "222222222222",
+        "profile": "nonprod",
+        "region": "ap-south-1",
+        "status": "databases",
+        "skipped": false,
+        "probe_instances": 3,
+        "probe_clusters": 1,
+        "errors": 0,
+        "total": 3,
+        "compliant": 2,
+        "non_compliant": 1,
+        "unknown": 0,
+        "pct_compliant": 66.7,
+        "with_pending": 0,
+        "pending_total": 0,
+        "past_standard_support": 0,
+        "account_name": ""
+      },
+      {
+        "account_id": "111111111111",
+        "profile": "prod",
+        "region": "ca-central-1",
+        "status": "error",
+        "skipped": false,
+        "probe_instances": null,
+        "probe_clusters": 0,
+        "errors": 2,
+        "total": 0,
+        "compliant": 0,
+        "non_compliant": 0,
+        "unknown": 0,
+        "pct_compliant": null,
+        "with_pending": 0,
+        "pending_total": 0,
+        "past_standard_support": 0,
+        "account_name": "prod-core"
+      },
+      {
+        "account_id": "222222222222",
+        "profile": "nonprod",
+        "region": "ca-central-1",
+        "status": "error",
+        "skipped": false,
+        "probe_instances": null,
+        "probe_clusters": 0,
+        "errors": 2,
+        "total": 0,
+        "compliant": 0,
+        "non_compliant": 0,
+        "unknown": 0,
+        "pct_compliant": null,
+        "with_pending": 0,
+        "pending_total": 0,
+        "past_standard_support": 0,
+        "account_name": ""
+      },
+      {
+        "account_id": "111111111111",
+        "profile": "prod",
+        "region": "ap-northeast-1",
+        "status": "empty",
+        "skipped": true,
+        "probe_instances": 0,
+        "probe_clusters": 0,
+        "errors": 0,
+        "total": 0,
+        "compliant": 0,
+        "non_compliant": 0,
+        "unknown": 0,
+        "pct_compliant": null,
+        "with_pending": 0,
+        "pending_total": 0,
+        "past_standard_support": 0,
+        "account_name": "prod-core"
+      },
+      {
+        "account_id": "111111111111",
+        "profile": "prod",
+        "region": "ap-south-1",
+        "status": "empty",
+        "skipped": true,
+        "probe_instances": 0,
+        "probe_clusters": 0,
+        "errors": 0,
+        "total": 0,
+        "compliant": 0,
+        "non_compliant": 0,
+        "unknown": 0,
+        "pct_compliant": null,
+        "with_pending": 0,
+        "pending_total": 0,
+        "past_standard_support": 0,
+        "account_name": "prod-core"
+      },
+      {
+        "account_id": "111111111111",
+        "profile": "prod",
+        "region": "ap-southeast-1",
+        "status": "empty",
+        "skipped": true,
+        "probe_instances": 0,
+        "probe_clusters": 0,
+        "errors": 0,
+        "total": 0,
+        "compliant": 0,
+        "non_compliant": 0,
+        "unknown": 0,
+        "pct_compliant": null,
+        "with_pending": 0,
+        "pending_total": 0,
+        "past_standard_support": 0,
+        "account_name": "prod-core"
+      },
+      {
+        "account_id": "111111111111",
+        "profile": "prod",
+        "region": "ap-southeast-2",
+        "status": "empty",
+        "skipped": true,
+        "probe_instances": 0,
+        "probe_clusters": 0,
+        "errors": 0,
+        "total": 0,
+        "compliant": 0,
+        "non_compliant": 0,
+        "unknown": 0,
+        "pct_compliant": null,
+        "with_pending": 0,
+        "pending_total": 0,
+        "past_standard_support": 0,
+        "account_name": "prod-core"
+      },
+      {
+        "account_id": "111111111111",
+        "profile": "prod",
+        "region": "eu-central-1",
+        "status": "empty",
+        "skipped": true,
+        "probe_instances": 0,
+        "probe_clusters": 0,
+        "errors": 0,
+        "total": 0,
+        "compliant": 0,
+        "non_compliant": 0,
+        "unknown": 0,
+        "pct_compliant": null,
+        "with_pending": 0,
+        "pending_total": 0,
+        "past_standard_support": 0,
+        "account_name": "prod-core"
+      },
+      {
+        "account_id": "111111111111",
+        "profile": "prod",
+        "region": "eu-north-1",
+        "status": "empty",
+        "skipped": true,
+        "probe_instances": 0,
+        "probe_clusters": 0,
+        "errors": 0,
+        "total": 0,
+        "compliant": 0,
+        "non_compliant": 0,
+        "unknown": 0,
+        "pct_compliant": null,
+        "with_pending": 0,
+        "pending_total": 0,
+        "past_standard_support": 0,
+        "account_name": "prod-core"
+      },
+      {
+        "account_id": "111111111111",
+        "profile": "prod",
+        "region": "eu-west-1",
+        "status": "empty",
+        "skipped": true,
+        "probe_instances": 0,
+        "probe_clusters": 0,
+        "errors": 0,
+        "total": 0,
+        "compliant": 0,
+        "non_compliant": 0,
+        "unknown": 0,
+        "pct_compliant": null,
+        "with_pending": 0,
+        "pending_total": 0,
+        "past_standard_support": 0,
+        "account_name": "prod-core"
+      },
+      {
+        "account_id": "111111111111",
+        "profile": "prod",
+        "region": "eu-west-2",
+        "status": "empty",
+        "skipped": true,
+        "probe_instances": 0,
+        "probe_clusters": 0,
+        "errors": 0,
+        "total": 0,
+        "compliant": 0,
+        "non_compliant": 0,
+        "unknown": 0,
+        "pct_compliant": null,
+        "with_pending": 0,
+        "pending_total": 0,
+        "past_standard_support": 0,
+        "account_name": "prod-core"
+      },
+      {
+        "account_id": "111111111111",
+        "profile": "prod",
+        "region": "sa-east-1",
+        "status": "empty",
+        "skipped": true,
+        "probe_instances": 0,
+        "probe_clusters": 0,
+        "errors": 0,
+        "total": 0,
+        "compliant": 0,
+        "non_compliant": 0,
+        "unknown": 0,
+        "pct_compliant": null,
+        "with_pending": 0,
+        "pending_total": 0,
+        "past_standard_support": 0,
+        "account_name": "prod-core"
+      },
+      {
+        "account_id": "111111111111",
+        "profile": "prod",
+        "region": "us-east-2",
+        "status": "empty",
+        "skipped": true,
+        "probe_instances": 0,
+        "probe_clusters": 0,
+        "errors": 0,
+        "total": 0,
+        "compliant": 0,
+        "non_compliant": 0,
+        "unknown": 0,
+        "pct_compliant": null,
+        "with_pending": 0,
+        "pending_total": 0,
+        "past_standard_support": 0,
+        "account_name": "prod-core"
+      },
+      {
+        "account_id": "111111111111",
+        "profile": "prod",
+        "region": "us-west-1",
+        "status": "empty",
+        "skipped": true,
+        "probe_instances": 0,
+        "probe_clusters": 0,
+        "errors": 0,
+        "total": 0,
+        "compliant": 0,
+        "non_compliant": 0,
+        "unknown": 0,
+        "pct_compliant": null,
+        "with_pending": 0,
+        "pending_total": 0,
+        "past_standard_support": 0,
+        "account_name": "prod-core"
+      },
+      {
+        "account_id": "222222222222",
+        "profile": "nonprod",
+        "region": "ap-northeast-1",
+        "status": "empty",
+        "skipped": true,
+        "probe_instances": 0,
+        "probe_clusters": 0,
+        "errors": 0,
+        "total": 0,
+        "compliant": 0,
+        "non_compliant": 0,
+        "unknown": 0,
+        "pct_compliant": null,
+        "with_pending": 0,
+        "pending_total": 0,
+        "past_standard_support": 0,
+        "account_name": ""
+      },
+      {
+        "account_id": "222222222222",
+        "profile": "nonprod",
+        "region": "ap-southeast-1",
+        "status": "empty",
+        "skipped": true,
+        "probe_instances": 0,
+        "probe_clusters": 0,
+        "errors": 0,
+        "total": 0,
+        "compliant": 0,
+        "non_compliant": 0,
+        "unknown": 0,
+        "pct_compliant": null,
+        "with_pending": 0,
+        "pending_total": 0,
+        "past_standard_support": 0,
+        "account_name": ""
+      },
+      {
+        "account_id": "222222222222",
+        "profile": "nonprod",
+        "region": "ap-southeast-2",
+        "status": "empty",
+        "skipped": true,
+        "probe_instances": 0,
+        "probe_clusters": 0,
+        "errors": 0,
+        "total": 0,
+        "compliant": 0,
+        "non_compliant": 0,
+        "unknown": 0,
+        "pct_compliant": null,
+        "with_pending": 0,
+        "pending_total": 0,
+        "past_standard_support": 0,
+        "account_name": ""
+      },
+      {
+        "account_id": "222222222222",
+        "profile": "nonprod",
+        "region": "eu-central-1",
+        "status": "empty",
+        "skipped": true,
+        "probe_instances": 0,
+        "probe_clusters": 0,
+        "errors": 0,
+        "total": 0,
+        "compliant": 0,
+        "non_compliant": 0,
+        "unknown": 0,
+        "pct_compliant": null,
+        "with_pending": 0,
+        "pending_total": 0,
+        "past_standard_support": 0,
+        "account_name": ""
+      },
+      {
+        "account_id": "222222222222",
+        "profile": "nonprod",
+        "region": "eu-north-1",
+        "status": "empty",
+        "skipped": true,
+        "probe_instances": 0,
+        "probe_clusters": 0,
+        "errors": 0,
+        "total": 0,
+        "compliant": 0,
+        "non_compliant": 0,
+        "unknown": 0,
+        "pct_compliant": null,
+        "with_pending": 0,
+        "pending_total": 0,
+        "past_standard_support": 0,
+        "account_name": ""
+      },
+      {
+        "account_id": "222222222222",
+        "profile": "nonprod",
+        "region": "eu-west-1",
+        "status": "empty",
+        "skipped": true,
+        "probe_instances": 0,
+        "probe_clusters": 0,
+        "errors": 0,
+        "total": 0,
+        "compliant": 0,
+        "non_compliant": 0,
+        "unknown": 0,
+        "pct_compliant": null,
+        "with_pending": 0,
+        "pending_total": 0,
+        "past_standard_support": 0,
+        "account_name": ""
+      },
+      {
+        "account_id": "222222222222",
+        "profile": "nonprod",
+        "region": "eu-west-2",
+        "status": "empty",
+        "skipped": true,
+        "probe_instances": 0,
+        "probe_clusters": 0,
+        "errors": 0,
+        "total": 0,
+        "compliant": 0,
+        "non_compliant": 0,
+        "unknown": 0,
+        "pct_compliant": null,
+        "with_pending": 0,
+        "pending_total": 0,
+        "past_standard_support": 0,
+        "account_name": ""
+      },
+      {
+        "account_id": "222222222222",
+        "profile": "nonprod",
+        "region": "sa-east-1",
+        "status": "empty",
+        "skipped": true,
+        "probe_instances": 0,
+        "probe_clusters": 0,
+        "errors": 0,
+        "total": 0,
+        "compliant": 0,
+        "non_compliant": 0,
+        "unknown": 0,
+        "pct_compliant": null,
+        "with_pending": 0,
+        "pending_total": 0,
+        "past_standard_support": 0,
+        "account_name": ""
+      },
+      {
+        "account_id": "222222222222",
+        "profile": "nonprod",
+        "region": "us-east-1",
+        "status": "empty",
+        "skipped": true,
+        "probe_instances": 0,
+        "probe_clusters": 0,
+        "errors": 0,
+        "total": 0,
+        "compliant": 0,
+        "non_compliant": 0,
+        "unknown": 0,
+        "pct_compliant": null,
+        "with_pending": 0,
+        "pending_total": 0,
+        "past_standard_support": 0,
+        "account_name": ""
+      },
+      {
+        "account_id": "222222222222",
+        "profile": "nonprod",
+        "region": "us-east-2",
+        "status": "empty",
+        "skipped": true,
+        "probe_instances": 0,
+        "probe_clusters": 0,
+        "errors": 0,
+        "total": 0,
+        "compliant": 0,
+        "non_compliant": 0,
+        "unknown": 0,
+        "pct_compliant": null,
+        "with_pending": 0,
+        "pending_total": 0,
+        "past_standard_support": 0,
+        "account_name": ""
+      },
+      {
+        "account_id": "222222222222",
+        "profile": "nonprod",
+        "region": "us-west-1",
+        "status": "empty",
+        "skipped": true,
+        "probe_instances": 0,
+        "probe_clusters": 0,
+        "errors": 0,
+        "total": 0,
+        "compliant": 0,
+        "non_compliant": 0,
+        "unknown": 0,
+        "pct_compliant": null,
+        "with_pending": 0,
+        "pending_total": 0,
+        "past_standard_support": 0,
+        "account_name": ""
+      },
+      {
+        "account_id": "222222222222",
+        "profile": "nonprod",
+        "region": "us-west-2",
+        "status": "empty",
+        "skipped": true,
+        "probe_instances": 0,
+        "probe_clusters": 0,
+        "errors": 0,
+        "total": 0,
+        "compliant": 0,
+        "non_compliant": 0,
+        "unknown": 0,
+        "pct_compliant": null,
+        "with_pending": 0,
+        "pending_total": 0,
+        "past_standard_support": 0,
+        "account_name": ""
       }
     ],
     "accounts": [
       {
         "account_id": "111111111111",
         "profile": "prod",
-        "collected_utc": "2026-10-14 17:46 UTC",
+        "account_name": "prod-core",
+        "collected_utc": "2026-11-05 12:21 UTC",
         "source": null,
-        "regions_with_databases": 3,
-        "errors": 0,
-        "total": 21,
-        "compliant": 11,
-        "non_compliant": 9,
+        "regions_with_databases": 2,
+        "errors": 2,
+        "total": 20,
+        "compliant": 12,
+        "non_compliant": 7,
         "unknown": 1,
-        "pct_compliant": 52.4,
+        "pct_compliant": 60,
         "with_pending": 3,
-        "pending_total": 6,
+        "pending_total": 5,
         "past_standard_support": 2
+      },
+      {
+        "account_id": "222222222222",
+        "profile": "nonprod",
+        "account_name": "",
+        "collected_utc": "2026-11-05 12:21 UTC",
+        "source": null,
+        "regions_with_databases": 1,
+        "errors": 2,
+        "total": 3,
+        "compliant": 2,
+        "non_compliant": 1,
+        "unknown": 0,
+        "pct_compliant": 66.7,
+        "with_pending": 0,
+        "pending_total": 0,
+        "past_standard_support": 0
       }
     ],
     "regions_total": {
@@ -1557,43 +2185,77 @@
       "profile": "",
       "region": "All regions",
       "status": "",
-      "errors": 0,
-      "total": 21,
-      "compliant": 11,
-      "non_compliant": 9,
+      "errors": 4,
+      "total": 23,
+      "compliant": 14,
+      "non_compliant": 8,
       "unknown": 1,
-      "pct_compliant": 52.4,
+      "pct_compliant": 60.9,
       "with_pending": 3,
-      "pending_total": 6,
+      "pending_total": 5,
       "past_standard_support": 2
     },
     "region_overview": {
-      "mode": "explicit",
-      "probe_parallel": null,
-      "checked": 3,
+      "mode": "discover",
+      "probe_parallel": 8,
+      "checked": 28,
       "with_databases": 3,
-      "empty": 0,
-      "error": 0,
-      "empty_regions": []
+      "empty": 23,
+      "error": 2,
+      "empty_regions": [
+        {
+          "account_id": "111111111111",
+          "regions": [
+            "ap-northeast-1",
+            "ap-south-1",
+            "ap-southeast-1",
+            "ap-southeast-2",
+            "eu-central-1",
+            "eu-north-1",
+            "eu-west-1",
+            "eu-west-2",
+            "sa-east-1",
+            "us-east-2",
+            "us-west-1"
+          ]
+        },
+        {
+          "account_id": "222222222222",
+          "regions": [
+            "ap-northeast-1",
+            "ap-southeast-1",
+            "ap-southeast-2",
+            "eu-central-1",
+            "eu-north-1",
+            "eu-west-1",
+            "eu-west-2",
+            "sa-east-1",
+            "us-east-1",
+            "us-east-2",
+            "us-west-1",
+            "us-west-2"
+          ]
+        }
+      ]
     },
     "engines": [
       {
         "engine": "aurora-mysql",
         "anchor": "eng-aurora-mysql",
-        "total": 3,
+        "total": 2,
         "compliant": 1,
-        "non_compliant": 2,
+        "non_compliant": 1,
         "unknown": 0,
-        "pct_compliant": 33.3,
+        "pct_compliant": 50,
         "majors": [
           {
             "major": "8.0",
-            "total": 3,
+            "total": 2,
             "compliant": 1,
-            "non_compliant": 2,
+            "non_compliant": 1,
             "unknown": 0,
             "latest_minor": "8.0.mysql_aurora.3.10.0",
-            "standard_support_end": "2029-04-16",
+            "standard_support_end": "2029-04-23",
             "support_flag": "ok"
           }
         ]
@@ -1601,11 +2263,11 @@
       {
         "engine": "aurora-postgresql",
         "anchor": "eng-aurora-postgresql",
-        "total": 7,
-        "compliant": 3,
+        "total": 8,
+        "compliant": 4,
         "non_compliant": 3,
         "unknown": 1,
-        "pct_compliant": 42.9,
+        "pct_compliant": 50,
         "majors": [
           {
             "major": "16",
@@ -1614,17 +2276,17 @@
             "non_compliant": 0,
             "unknown": 0,
             "latest_minor": "16.9",
-            "standard_support_end": "2030-12-07",
+            "standard_support_end": "2030-12-14",
             "support_flag": "ok"
           },
           {
             "major": "15",
-            "total": 3,
-            "compliant": 2,
+            "total": 4,
+            "compliant": 3,
             "non_compliant": 1,
             "unknown": 0,
             "latest_minor": "15.13",
-            "standard_support_end": "2030-02-10",
+            "standard_support_end": "2030-02-17",
             "support_flag": "ok"
           },
           {
@@ -1634,7 +2296,7 @@
             "non_compliant": 1,
             "unknown": 0,
             "latest_minor": "14.17",
-            "standard_support_end": "2029-01-06",
+            "standard_support_end": "2029-01-13",
             "support_flag": "ok"
           },
           {
@@ -1644,7 +2306,7 @@
             "non_compliant": 1,
             "unknown": 0,
             "latest_minor": "12.22",
-            "standard_support_end": "2025-03-28",
+            "standard_support_end": "2025-04-04",
             "support_flag": "past standard support (Extended Support charges)"
           },
           {
@@ -1654,7 +2316,7 @@
             "non_compliant": 0,
             "unknown": 1,
             "latest_minor": null,
-            "standard_support_end": "2025-03-08",
+            "standard_support_end": "2025-03-15",
             "support_flag": "past standard support (Extended Support charges)"
           }
         ]
@@ -1681,6 +2343,27 @@
         ]
       },
       {
+        "engine": "mariadb",
+        "anchor": "eng-mariadb",
+        "total": 1,
+        "compliant": 1,
+        "non_compliant": 0,
+        "unknown": 0,
+        "pct_compliant": 100,
+        "majors": [
+          {
+            "major": "10.11",
+            "total": 1,
+            "compliant": 1,
+            "non_compliant": 0,
+            "unknown": 0,
+            "latest_minor": "10.11.11",
+            "standard_support_end": "2029-08-01",
+            "support_flag": "ok"
+          }
+        ]
+      },
+      {
         "engine": "mysql",
         "anchor": "eng-mysql",
         "total": 2,
@@ -1696,7 +2379,7 @@
             "non_compliant": 0,
             "unknown": 0,
             "latest_minor": "8.4.6",
-            "standard_support_end": "2032-04-20",
+            "standard_support_end": "2032-04-27",
             "support_flag": "ok"
           },
           {
@@ -1706,8 +2389,8 @@
             "non_compliant": 1,
             "unknown": 0,
             "latest_minor": "8.0.43",
-            "standard_support_end": "2027-04-17",
-            "support_flag": "ok"
+            "standard_support_end": "2027-04-24",
+            "support_flag": "standard support ends in 169 days"
           }
         ]
       },
@@ -1756,12 +2439,22 @@
       {
         "engine": "postgres",
         "anchor": "eng-postgres",
-        "total": 4,
-        "compliant": 2,
+        "total": 5,
+        "compliant": 3,
         "non_compliant": 2,
         "unknown": 0,
-        "pct_compliant": 50,
+        "pct_compliant": 60,
         "majors": [
+          {
+            "major": "17",
+            "total": 1,
+            "compliant": 1,
+            "non_compliant": 0,
+            "unknown": 0,
+            "latest_minor": "17.6",
+            "standard_support_end": "2031-10-10",
+            "support_flag": "ok"
+          },
           {
             "major": "16",
             "total": 3,
@@ -1769,7 +2462,7 @@
             "non_compliant": 1,
             "unknown": 0,
             "latest_minor": "16.10",
-            "standard_support_end": "2030-12-07",
+            "standard_support_end": "2030-12-14",
             "support_flag": "ok"
           },
           {
@@ -1779,8 +2472,8 @@
             "non_compliant": 1,
             "unknown": 0,
             "latest_minor": "13.22",
-            "standard_support_end": "2027-02-26",
-            "support_flag": "standard support ends in 134 days"
+            "standard_support_end": "2027-03-05",
+            "support_flag": "standard support ends in 119 days"
           }
         ]
       },

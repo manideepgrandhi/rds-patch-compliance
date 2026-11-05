@@ -278,9 +278,9 @@ send_alerts() {
     return 0
 }
 
-# shellcheck disable=SC2317  # invoked via trap
+# shellcheck disable=SC2317,SC2329  # invoked via trap
 on_exit() { local rc=$?; trap - EXIT INT TERM; [[ -n "$WORK" && -d "$WORK" ]] && rm -rf -- "$WORK"; exit "$rc"; }
-# shellcheck disable=SC2317
+# shellcheck disable=SC2317,SC2329
 on_signal() { _log ERROR "Interrupted"; exit 130; }
 
 main() {

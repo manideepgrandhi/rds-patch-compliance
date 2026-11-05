@@ -28,6 +28,10 @@ prefix = rds_patch_compliance
 tz = Asia/Kolkata
 # log_file = /home/cloudshell-user/compliance-reports/run.log
 
+# --- account names (v1.5.0; shown as "name (number)"; otherwise the IAM account alias, otherwise the number)
+# 111111111111 = prod-payments
+# 222222222222 = nonprod-shared
+
 # --- alerts (optional)
 # alert_emails = dba-team@example.com
 # alert_webhooks = https://hooks.slack.com/services/XXX/YYY/ZZZ

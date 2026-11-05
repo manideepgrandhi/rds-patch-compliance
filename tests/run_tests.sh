@@ -118,7 +118,7 @@ vce oracle-ee "${O}2026-10.mrp-2026-10.r1" 1 "${O}2026-07.mrp-2026-07.r10"
 
 echo "== usage / validation"
 t help 0 fleet --help;               has help out 'Exit codes'; has help out 'read-only'; has help out '--max-behind'; has help out 'describe-global-clusters'
-t version 0 fleet --version;         has version out '1\.4\.1'
+t version 0 fleet --version;         has version out '1\.5\.0'
 t badopt 1 fleet --bogus
 t badfmt 1 fleet -r us-east-1 -F xml
 t multinoout 1 fleet -r us-east-1 -F csv,html
@@ -266,10 +266,10 @@ mapfile -t F < <(find "$OUT/rep" -type f | sort)
 chk "5 files written (txt, html, json, csv, regions csv)" test "${#F[@]}" -eq 5
 chk "files are 0640" test "$(stat -c %a "${F[@]}" | sort -u)" = 640
 CSV="$(find "$OUT/rep" -name '*.csv' ! -name '*_regions.csv')"; HTML="$(find "$OUT/rep" -name '*.html')"; TXT="$(find "$OUT/rep" -name '*.txt')"
-chk "csv header" test "$(head -1 "$CSV")" = '"account_id","profile","region","resource_type","identifier","members","engine","major_version","current_version","latest_minor_version","versions_behind","newer_versions","default_auto_upgrade_target","compliance_status","auto_minor_upgrade","standard_support_end","extended_support_end","support_flag","pending_actions_count","pending_actions","deprecated_version","maint_window_utc","maint_window_ist","next_maintenance","days_until_maintenance","global_cluster","global_role"'
+chk "csv header" test "$(head -1 "$CSV")" = '"account_id","profile","region","resource_type","identifier","members","engine","major_version","current_version","latest_minor_version","versions_behind","newer_versions","default_auto_upgrade_target","compliance_status","auto_minor_upgrade","standard_support_end","extended_support_end","support_flag","pending_actions_count","pending_actions","deprecated_version","maint_window_utc","maint_window_ist","next_maintenance","days_until_maintenance","global_cluster","global_role","account_name"'
 chk "csv rows = 22" test "$(python3 -c 'import csv,sys; print(sum(1 for _ in csv.reader(open(sys.argv[1])))-1)' "$CSV")" -eq 22
-chk "csv parses with 27 columns everywhere" test "$(python3 -c 'import csv,sys; print(set(len(r) for r in csv.reader(open(sys.argv[1]))))' "$CSV")" = "{27}"
-for p in 'id="q"' 'id="f-global"' 'class="badge">2<' 'details class="pend"' '01:30 IST' "haven't been applied yet" 'Valid minor targets' 'Auto-upgrade default' 'table class="main"' 'st bad' 'st ok' 'Extended Support' 'id="about"' 'About this report' 'Per engine and major version' 'localeCompare' 'href="#eng-aurora-postgresql"'; do
+chk "csv parses with 28 columns everywhere" test "$(python3 -c 'import csv,sys; print(set(len(r) for r in csv.reader(open(sys.argv[1]))))' "$CSV")" = "{28}"
+for p in 'id="q"' 'id="f-global"' 'class="badge">2<' 'details class="pend"' '01:30 IST' "haven't been applied yet" 'Valid minor targets' 'Auto-upgrade default' 'table class="main"' 'st bad' 'st ok' 'Extended Support' 'id="about"' 'About this report' 'id="eng-tbl"' 'details class="eng-sec"' 'id="f-flag"' 'localeCompare' 'href="#eng-aurora-postgresql"'; do
     if grep -qF -- "$p" "$HTML"; then ok "html has $p"; else bad "html lacks $p"; fi
 done
 chk "html is well-formed enough (python html.parser)" python3 -c 'import html.parser,sys; html.parser.HTMLParser().feed(open(sys.argv[1]).read())' "$HTML"
@@ -315,7 +315,7 @@ jqt disc '.summary as $s | [.rows[] | select(.region == "us-east-1")] | length =
 t disc_txt 0 discover -P prod -A
 has disc_txt out '^Regions  : 14 checked, 2 with databases, 11 empty, 1 error$'; has disc_txt out '^  Regions : discovery probe, 8 in parallel'
 hasnt disc_txt out '^Empty'
-has disc_txt out '^Accounts : 111111111111 \(prod\)   Regions: all enabled$'
+has disc_txt out '^Accounts : 111111111111 prod-core \(prod\)   Regions: all enabled$'
 chk "disc_txt: no region names above SUMMARY" test "$(sed '/^SUMMARY/q' "$OUT/disc_txt.out" | grep -cE '[a-z]{2}-[a-z]+-[0-9]')" -eq 0
 has disc_txt out '^PER REGION'
 has disc_txt out '^  111111111111  us-east-1       databases      19     11      7     1   57\.9%     3'
@@ -435,7 +435,7 @@ chk "single account: html name has the account number" test -f "$MG/rds_patch_co
 chk "single account: csv + regions csv names have the account number" test -f "$MG/rds_patch_compliance_111111111111_20260921_194320_regions.csv"
 SD1="$MG/rds_patch_111111111111_20260921.json"
 chk "save-data default name rds_patch_<acct>_<date>.json" test -f "$SD1"
-chk "save-data: schema, account, profile, collected_at UTC" jq -e '.schema == "rds_patch_compliance_data" and .schema_version == 1 and .accounts == [{account: "111111111111", profile: "prod", collected_epoch: 1790000000, collected_at: "2026-09-21T14:13:20Z"}] and .collected_at == "2026-09-21T14:13:20Z"' "$SD1"
+chk "save-data: schema, account, profile, collected_at UTC" jq -e '.schema == "rds_patch_compliance_data" and .schema_version == 1 and .accounts == [{account: "111111111111", profile: "prod", name: "prod-core", collected_epoch: 1790000000, collected_at: "2026-09-21T14:13:20Z"}] and .collected_at == "2026-09-21T14:13:20Z"' "$SD1"
 chk "save-data: regions with databases only" jq -e '.regions == ["us-east-1"]' "$SD1"
 chk "save-data: per DB engine / versions / status / pending" jq -e '(.rows | length) == 19 and all(.rows[]; has("engine") and has("current_version") and has("latest_minor_version") and has("compliance_status") and has("pending_actions_detail") and .account_id == "111111111111")' "$SD1"
 chk "save-data: region_status kept (empty ap-south-1 counted)" jq -e '[.region_status[] | select(.region == "ap-south-1")] | length == 1' "$SD1"
@@ -478,7 +478,7 @@ chk "merge html: account dropdown, region / engine / status selects, name search
 chk "merge html: per account table + merged inputs note" bash -c "grep -q '<section id=\"accounts\">' '$MH' && grep -q '<section id=\"sources\">' '$MH' && grep -q 'old_prod.json' '$MH'"
 chk "merge html: no empty region rows" test "$(grep -oP '<table class="sortable regions">.*?</tbody>' "$MH" | grep -o '<tr[ >]' | wc -l)" -eq 4
 chk "merge html: embedded data cannot close the script tag" bash -c "grep -oP '<script type=\"application/json\" id=\"pc-data\">\K.*?(?=</script>)' '$MH' | grep -q . && ! grep -oP '<script type=\"application/json\" id=\"pc-data\">\K.*?(?=</script>)' '$MH' | grep -q '<'"
-mg merge_txt 0 --merge "$SD1" "$MG/nonprod data.json" "$SD3" -F text; has merge_txt out '^PER ACCOUNT'; has merge_txt out '^Accounts : 111111111111 \(prod\), 222222222222 \(nonprod\), 333333333333 \(dev\)   Merged: 3 file\(s\)'
+mg merge_txt 0 --merge "$SD1" "$MG/nonprod data.json" "$SD3" -F text; has merge_txt out '^PER ACCOUNT'; has merge_txt out '^Accounts : 111111111111 prod-core \(prod\), 222222222222 \(nonprod\), 333333333333 \(dev\)   Merged: 3 file\(s\)'
 mg merge_dir_default 0 --merge "$MG" -o "$OUT/mgd"
 chk "merge: default format html, -o DIR" test "$(find "$OUT/mgd" -name 'rds_patch_compliance_2026*.html' | wc -l)" -eq 1
 mg merge_mb 0 --merge "$SD1" --max-behind 9 -F json; jqt merge_mb '.summary.non_compliant == 0'
@@ -514,7 +514,7 @@ else echo "  skip browser check (node + puppeteer-core on NODE_PATH + Chrome not
 echo "== v1.4.1: tampered --merge file cannot inject HTML/JS (M1)"
 XP='<img src=x data-xss=1 onerror="window.__xss=1">'
 XD="$OUT/xss in"; mkdir -p "$XD"
-jq --arg x "$XP" '.rows[0] |= (.versions_behind = null | .compliance_status = ("UNKNOWN" + $x))' "$SD1" >"$XD/rds_patch_111111111111_20260921.json"
+jq --arg x "$XP" '.rows[0] |= (.versions_behind = null | .compliance_status = ("UNKNOWN" + $x)) | .rows[1] |= (.engine = ("aurora-mysql" + $x) | .compliance_status = "NON-COMPLIANT") | .accounts[0].name = ("acct" + $x)' "$SD1" >"$XD/rds_patch_111111111111_20260921.json"
 mg xss 0 --merge "$XD" -o "$OUT/xss out/x.html" -F html,json,csv
 XH="$OUT/xss out/x.html"
 chk "xss: report written" test -s "$XH"
@@ -541,7 +541,7 @@ chk "compat: no top_behind in merged JSON" jq -e '.summary | has("top_behind") |
 CT="$OUT/compat out/combined.txt"; CH="$OUT/compat out/combined.html"
 chk "compat txt: no MOST BEHIND, has PER ACCOUNT + ABOUT" bash -c "! grep -qi 'most behind' '$CT' && grep -q '^PER ACCOUNT' '$CT' && grep -q '^ABOUT THIS REPORT' '$CT'"
 chk "compat html: no Top most behind, has About details" bash -c "! grep -qi 'most behind' '$CH' && grep -q 'id=\"about\"' '$CH'"
-chk "compat csv: 24 rows x 27 cols (no tag columns)" test "$(python3 -c 'import csv,sys; r=list(csv.reader(open(sys.argv[1]))); print(len(r)-1, set(map(len,r)))' "$OUT/compat out/combined.csv")" = "24 {27}"
+chk "compat csv: 24 rows x 28 cols (no tag columns)" test "$(python3 -c 'import csv,sys; r=list(csv.reader(open(sys.argv[1]))); print(len(r)-1, set(map(len,r)))' "$OUT/compat out/combined.csv")" = "24 {28}"
 chk "compat: merged outputs from pre-1.4 files show no command / ARN / tags" bash -c "! grep -lE 'modify-db|arn:aws|tag:|upgrade_command' '$OUT/compat out/combined.csv' '$OUT/compat out/combined.html' '$OUT/compat out/combined.txt' && ! grep -qE 'modify-db|upgrade_command' '$OUT/compat out/combined.json'"
 chk "compat: same numbers as merging only v1.3.1-format data" test "$(jq -c '.summary | [.compliant,.non_compliant,.unknown]' "$CJ")" = '[14,9,1]'
 mkdir -p "$OUT/drv/c/Users/DBA Team/compat data"; cp "$CP"/*.json "$OUT/drv/c/Users/DBA Team/compat data/"
@@ -571,7 +571,7 @@ jqt glob '[.rows[] | select(has("upgrade_command"))] | length == 0'
 t globtxt 0 global "${GR[@]}" -F txt,csv,html -o "$OUT/glob"
 GT="$(find "$OUT/glob" -name '*[0-9].txt' | head -1)"; GH="$(find "$OUT/glob" -name '*.html' | head -1)"; GC="$(find "$OUT/glob" -name '*[0-9].csv' | head -1)"
 chk "glob txt: header + section + mismatch" bash -c "grep -q 'Global databases : 2 (4 members)' '$GT' && grep -q '^GLOBAL DATABASES' '$GT' && grep -q 'region status mismatch' '$GT'"
-chk "glob csv: global_cluster/global_role last" bash -c "head -1 '$GC' | grep -q '\"global_cluster\",\"global_role\"\$'"
+chk "glob csv: global_cluster/global_role then account_name last" bash -c "head -1 '$GC' | grep -q '\"global_cluster\",\"global_role\",\"account_name\"\$'"
 chk "glob: no ARN / command / tags / notes in txt csv html" bash -c "! grep -lE 'arn:aws|modify-db|modify-global|tag:|\"note\"|Copy</button>' '$GT' '$GC' '$GH'"
 chk "glob html: dropdown + section" bash -c "grep -q 'id=\"f-global\"' '$GH' && grep -q 'Not global' '$GH' && grep -q 'id=\"globals\"' '$GH'"
 MOCK_GLOBAL_DENY=1 t globdeny 0 global "${GR[@]}" -F json
@@ -592,6 +592,43 @@ has gtag err 'ignored since v1.4.0'; chk "gtag: no tag column" bash -c "! grep -
 if command -v node >/dev/null 2>&1 && [[ -x "${CHROME:-/usr/bin/google-chrome}" ]] && NODE_PATH="${NODE_PATH:-}" node -e 'require("puppeteer-core")' 2>/dev/null; then
     res="$(node "$HERE/browser_global.js" "$GH" ${SHOTS:+"$SHOTS"} 2>&1)"; rc=$?
     chk "browser: Global cluster dropdown ${res:0:300}" test "$rc" -eq 0
+fi
+
+echo "== v1.5.0: account names (config map > iam alias > number), engine table, picker"
+AN="$OUT/an"; mkdir -p "$AN"
+t an_alias 0 fleet -P prod -P nonprod -r us-east-1 -F csv,json,text -o "$AN/a"
+chk "alias: prod gets its alias, nonprod (AccessDenied) falls back silently" jq -e '[.meta.accounts[] | {account, name}] == [{account: "111111111111", name: "prod-core"}, {account: "222222222222", name: ""}]' "$AN"/a/*.json
+hasnt an_alias err 'AccessDenied|list-account-aliases'
+chk "alias: account_name is the last CSV column and filled" python3 -c 'import csv,sys,glob; r=list(csv.reader(open([f for f in glob.glob(sys.argv[1]+"/*.csv") if "_regions" not in f][0],encoding="utf-8-sig"))); h=r[0]; i=h.index("account_name"); assert i==len(h)-1; assert {(x[0],x[i]) for x in r[1:]}=={("111111111111","prod-core")}, set((x[0],x[i]) for x in r[1:])' "$AN/a"
+chk "alias: json rows carry account_name" jq -e 'all(.rows[]; has("account_name")) and ([.rows[] | select(.account_id == "111111111111") | .account_name] | unique) == ["prod-core"]' "$AN"/a/*.json
+chk "alias: text Accounts line + PER ACCOUNT NAME column" bash -c "grep -q '^Accounts : 111111111111 prod-core (prod), 222222222222 (nonprod)' '$AN'/a/*.txt && grep -A1 '^PER ACCOUNT' '$AN'/a/*.txt | grep -q NAME"
+printf '111111111111 = prod-payments   # comment\n222222222222 = "np \001x"\n' >"$AN/n.conf"
+t an_conf 0 fleet --config "$AN/n.conf" -P prod -P nonprod -r us-east-1 -r ap-south-1 -F json,html -o "$AN/c"
+chk "config map wins over the alias, comment/quotes/control chars stripped" jq -e '[.meta.accounts[].name] == ["prod-payments", "np x"]' "$AN"/c/*.json
+chk "html shows name (number)" grep -q 'prod-payments (111111111111)' "$AN"/c/*.html
+printf '1111 = short\n' >"$AN/bad.conf"; t an_badkey 1 fleet --config "$AN/bad.conf"
+MOCK_ALIAS='["x"]' MOCK_ALIAS_DENY=1 t an_deny 0 fleet -P prod -r us-east-1 -F json -o "$AN/d"
+chk "alias denied: number only, no warning" jq -e '.meta.accounts[0].name == ""' "$AN"/d/*.json
+hasnt an_deny err 'AccessDenied|list-account-aliases'
+MOCK_ALIAS="[\"$(printf 'a%.0s' {1..80})\"]" t an_long 0 fleet -P prod -r us-east-1 -F json -o "$AN/l"
+chk "alias capped at 64 chars" jq -e '(.meta.accounts[0].name | length) == 64' "$AN"/l/*.json
+t an_dry 0 fleet -P prod -r us-east-1 --dry-run; has an_dry out 'iam list-account-aliases'
+chk "merge: old data files without names still merge (name empty)" jq -e 'all(.accounts[]; has("name") | not)' "$HERE"/fixtures/v130/*.json
+mg an_merge 0 --merge "$HERE"/fixtures/v130 "$SD1" -F json -o "$AN/m"
+chk "merge: names carried through, old accounts number only" jq -e '([.meta.accounts[] | select(.account == "111111111111") | .name] | unique) == ["prod-core"] and ([.meta.accounts[] | select(.account != "111111111111") | .name] | unique) == [""]' "$AN"/m/*.json
+XA='<img src=x data-xss=1 onerror="window.__xss=1">'
+MOCK_ALIAS="$(jq -cn --arg x "$XA" '[$x]')" t an_xss 0 fleet -P prod -r us-east-1 -F html,json -o "$AN/x"
+chk "xss alias: survives into json, escaped in html" bash -c "jq -e '.meta.accounts[0].name | test(\"data-xss\")' '$AN'/x/*.json >/dev/null && ! grep -q '<img src=x data-xss' '$AN'/x/*.html"
+printf '111111111111 = <svg onload=window.__xss=2> data-xss\n' >"$AN/x.conf"
+t an_xssc 0 fleet --config "$AN/x.conf" -P prod -r us-east-1 -F html -o "$AN/xc"
+chk "xss config name: escaped in html" bash -c "! grep -q '<svg onload' '$AN'/xc/*.html"
+if command -v node >/dev/null 2>&1 && [[ -x "${CHROME:-/usr/bin/google-chrome}" ]] && NODE_PATH="${NODE_PATH:-}" node -e 'require("puppeteer-core")' 2>/dev/null; then
+    for h in "$AN"/x/*.html "$AN"/xc/*.html; do
+        res="$(node "$HERE/xss_check.js" "$h" 2>&1)"; rc=$?
+        chk "xss account name: headless Chrome ${res:0:300}" test "$rc" -eq 0
+    done
+    res="$(node "$HERE/browser_check.js" "$(ls "$AN"/c/*.html)" 2>&1)"; rc=$?
+    chk "browser: named accounts report ${res:0:300}" test "$rc" -eq 0
 fi
 
 echo "== hygiene"

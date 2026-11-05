@@ -21,7 +21,7 @@ def ora_recount($any):
 . as $F
 | def utc: strftime("%Y-%m-%d %H:%M UTC");
   [ $F[] | . as $f | $f.d.accounts[]
-    | {account, profile, collected_epoch: (.collected_epoch // $f.d.collected_epoch), i: $f.i, label: $f.label} ] as $ALL
+    | {account, profile, name: (.name // ""), collected_epoch: (.collected_epoch // $f.d.collected_epoch), i: $f.i, label: $f.label} ] as $ALL
 | ($ALL | group_by(.account) | map(sort_by(.collected_epoch, .i))) as $G
 | ([ $G[] | last | {key: "\(.account)|\(.i)", value: true} ] | from_entries) as $USE
 | ([ $ALL[].account ] | unique) as $KNOWN
@@ -31,7 +31,7 @@ def ora_recount($any):
 | ($mb // ([ $F[].d.settings.max_behind // 2 ] | max)) as $M
 | ($oal // any($F[]; .d.settings.oracle_any_patch_line // false)) as $OAL
 | {
-    accounts: [ $KEEP[] | {account, profile, collected_epoch, collected_utc: (.collected_epoch | utc), source: .label} ],
+    accounts: [ $KEEP[] | {account, profile, name, collected_epoch, collected_utc: (.collected_epoch | utc), source: .label} ],
     rows: [ $rows[] | ora_recount($OAL) | if .versions_behind == null or .compliance_status == "UNKNOWN" then .
                       else .compliance_status = (if .versions_behind > $M then "NON-COMPLIANT" else "COMPLIANT" end) end ],
     region_status: [ $F[] | . as $f | ($f.d.region_status // [])[] | select(.account | used($f)) ],

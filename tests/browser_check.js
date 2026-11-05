@@ -47,7 +47,8 @@ function parseCsv(t) {
   ok(+s.servers === N, 'initial servers card = rows');
   ok(s.main === N, 'all rows visible initially');
   ok(s.opts['f-acct'].length === accts.length + 1, 'account dropdown has every account');
-  ok(s.opts['f-acct'].slice(1).every(o => /^\d{12}\|\d{12} \(.+\)$/.test(o)), 'account option = number (profile)');
+  ok(s.opts['f-acct'].slice(1).every(o => { const [v, t] = o.split('|'); const a = D.accounts.find(x => x.account === v);
+    return /^\d{12}$/.test(v) && a && t === (a.name ? a.name + ' (' + v + ')' : v + ' (' + a.profile + ')'); }), 'account option = name (number) or number (profile)');
   const regs = [...new Set(D.rows.map(x => x.region))];
   ok(s.opts['f-region'].length === regs.length + 1, 'region dropdown = regions with databases only');
   ok(s.regionRows.every(x => x[1] > 0 || true), 'region rows');
@@ -111,7 +112,7 @@ function parseCsv(t) {
   const dl = fs.mkdtempSync(path.join(os.tmpdir(), 'pcdl'));
   const cdp = await g.target().createCDPSession();
   await cdp.send('Page.setDownloadBehavior', {behavior: 'allow', downloadPath: dl});
-  await g.click('#f-csv'); let got = [];
+  await g.click('#f-csv'); await sleep(50); await g.click('#cpk [data-a="go"]'); let got = [];
   for (let i = 0; i < 50 && !(got = fs.readdirSync(dl).filter(f => f.endsWith('.csv'))).length; i++) await sleep(100);
   ok(got.length === 1 && got[0] === 'rds_patch_compliance_' + a1 + '_' + D.csv_stamp + '_filtered.csv', 'real CSV download with account in the name: ' + got);
   if (got.length) ok(fs.readFileSync(path.join(dl, got[0]), 'utf8') === csv, 'downloaded bytes = export');
@@ -121,6 +122,94 @@ function parseCsv(t) {
   ok(+s.servers === N && s.main === N && s.foot[0] === N, 'reset restores all');
   if (shots) { await g.evaluate(() => document.getElementById('accounts').scrollIntoView()); await g.screenshot({path: path.join(shots, '05_per_account_region.png')});
     const src = await g.$('#sources'); if (src) { await src.scrollIntoView(); await g.screenshot({path: path.join(shots, '06_merged_inputs.png')}); } }
+  // ---- v1.5.0: engine table, clickable cards, pop-up, collapsible sections, CSV picker, account names
+  const v15 = await g.evaluate(() => { const e = document.getElementById('engines');
+    return {prev: e && e.previousElementSibling && e.previousElementSibling.matches('.cards.risk'), beforeAcc: !!(e && document.getElementById('accounts') && (e.compareDocumentPosition(document.getElementById('accounts')) & 4)),
+      stat: document.querySelectorAll('.cards.stat .card').length, risk: document.querySelectorAll('.cards.risk .card').length,
+      oldTbl: document.body.innerHTML.indexOf('Per engine and major version') >= 0, mr: document.querySelectorAll('#eng-tbl tr.mr').length,
+      er: [...document.querySelectorAll('#eng-tbl tr.er')].map(t => t.dataset.e), open: [...document.querySelectorAll('details.eng-sec')].filter(d => d.open).length,
+      secs: document.querySelectorAll('details.eng-sec').length, focus: [...document.querySelectorAll('.card')].every(c => c.getAttribute('role') === 'button' && c.tabIndex === 0)}; });
+  ok(v15.prev && v15.beforeAcc, 'engine table sits directly under the cards, above Per account');
+  ok(v15.stat === 4 && v15.risk >= 5, 'two card rows (4 status + risk cards)');
+  ok(!v15.oldTbl, 'old Per engine and major version table removed');
+  ok(v15.mr === 0 && v15.er.length === new Set(D.rows.map(x => x.engine)).size, 'engine table: one collapsed row per engine');
+  const ncByE = {}; D.rows.forEach(x => { if (x.compliance_status === 'NON-COMPLIANT') ncByE[x.engine] = (ncByE[x.engine] || 0) + 1; });
+  ok(v15.er.slice(0, Object.keys(ncByE).length).every(e => ncByE[e]), 'engines with non-compliant servers sort first');
+  ok(v15.open === 0 && v15.secs === v15.er.length, 'engine sections collapsed by default');
+  ok(v15.focus, 'cards are role=button + tabindex=0');
+  const e0 = v15.er[0], E0 = D.engines.find(x => x.engine === e0);
+  await g.click('#eng-tbl tr.er[data-e="' + e0 + '"] .car'); await sleep(30);
+  const mrN = () => g.evaluate(e => [...document.querySelectorAll('#eng-tbl tr.mr')].filter(t => t.dataset.e === e).length, e0);
+  const m1 = await mrN(); await g.click('#eng-all'); await sleep(30); const m2 = await mrN();
+  ok(m1 >= 1 && m2 === E0.majors.length && m2 >= m1, `caret expands majors (${m1} problem, ${m2} with Show all majors)`);
+  await g.click('#eng-all'); await sleep(30);
+  await g.click('#eng-tbl tr.er[data-e="' + e0 + '"] .lnk[data-f="nc"]'); await sleep(30);
+  let fv = await g.evaluate(() => ({e: document.getElementById('f-engine').value, s: document.getElementById('f-status').value, ftag: getComputedStyle(document.querySelector('#engines .ftag')).display,
+    open: [...document.querySelectorAll('details.eng-sec')].filter(d => d.open && d.style.display !== 'none').map(d => d.dataset.e)}));
+  ok(fv.e === e0 && fv.s === 'NON-COMPLIANT', 'non-compliant count click sets Engine + Status');
+  ok(fv.ftag !== 'none', 'Filtered tag shown on the engine table');
+  ok(fv.open.length === 1 && fv.open[0] === e0, 'filter auto-opens the matching engine section');
+  await g.click('#f-reset'); await sleep(30);
+  ok(await g.evaluate(() => [...document.querySelectorAll('details.eng-sec')].every(d => !d.open)), 'reset collapses the sections again');
+  await g.click('#eng-tbl tr.er[data-e="' + e0 + '"] a.en'); await sleep(30);
+  ok(await g.evaluate(a => document.getElementById(a).open, E0.anchor), 'engine name opens its server section');
+  await g.click('#x-open'); ok(await g.evaluate(() => [...document.querySelectorAll('details.eng-sec')].every(d => d.open)), 'Expand all');
+  await g.click('#x-close'); ok(await g.evaluate(() => [...document.querySelectorAll('details.eng-sec')].every(d => !d.open)), 'Collapse all');
+  const vis = () => g.evaluate(() => [...document.querySelectorAll('table.main tbody tr[data-i]')].filter(t => t.style.display !== 'none').length);
+  await g.click('.card[data-k="non-compliant"]'); await sleep(30);
+  ok(await g.evaluate(() => document.getElementById('f-status').value === 'NON-COMPLIANT' && document.querySelector('.card[data-k="non-compliant"]').classList.contains('on')), 'Non-compliant card sets Status + highlight');
+  await g.click('.card[data-k="non-compliant"]'); await sleep(30);
+  ok(await g.evaluate(() => document.getElementById('f-status').value === '' && !document.querySelector('.card.on')), 'second click clears the filter');
+  const flags = {'extended-support': ['past', x => x.past_standard_support], 'pending-maintenance': ['pend', x => x.pending_actions_count > 0],
+    'auto-minor-upgrade-off': ['aoff', x => x.auto_minor_upgrade === 'false' || x.auto_minor_upgrade === 'mixed'], 'version-not-returned': ['dep', x => x.deprecated_version], 'support-ending': ['near', x => x.nearing_end_of_support]};
+  for (const k of Object.keys(flags)) { await g.click('.card[data-k="' + k + '"]'); await sleep(30);
+    const want = D.rows.filter(flags[k][1]).length, fl = await g.evaluate(() => document.getElementById('f-flag').value);
+    ok(fl === flags[k][0] && (await vis()) === want, `${k} card sets Flag=${flags[k][0]} (${want} rows)`);
+    await g.click('.card[data-k="' + k + '"]'); await sleep(20); }
+  ok(await g.evaluate(() => { const f = document.getElementById('f-flag'), t = f.parentNode; return t.lastElementChild.previousElementSibling.previousElementSibling.previousElementSibling === f; }), 'Flag dropdown at the end of the filter row (before the buttons)');
+  const nglob = D.rows.filter(x => x.global_cluster).length;
+  await g.click('.card[data-k="global-databases"]'); await sleep(30);
+  ok(nglob === 0 || ((await g.evaluate(() => document.getElementById('f-global').value)) === '__all' && (await vis()) === nglob), 'Global databases card = All global databases');
+  await g.click('.card[data-k="servers-clusters"]'); await sleep(30);
+  ok((await vis()) === N && await g.evaluate(() => !document.body.classList.contains('filtered')), 'Servers card resets the filters');
+  await g.focus('.card[data-k="compliant"]'); await g.keyboard.press('Enter'); await sleep(30);
+  ok(await g.evaluate(() => document.getElementById('f-status').value === 'COMPLIANT'), 'Enter on a focused card');
+  await g.keyboard.press(' '); await sleep(30);
+  ok(await g.evaluate(() => document.getElementById('f-status').value === ''), 'Space toggles it off');
+  await g.hover('.card[data-k="non-compliant"]'); await sleep(50);
+  const pop = await g.evaluate(() => { const p = document.querySelector('.card[data-k="non-compliant"] .pop'); return {d: getComputedStyle(p).display, l: [...p.children].map(c => [c.children[0].textContent, +c.children[1].textContent])}; });
+  const pw = Object.entries(ncByE).sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1));
+  ok(pw.length === 0 || (pop.d === 'block' && JSON.stringify(pop.l) === JSON.stringify(pw)), 'Non-compliant pop-up lists engine counts, descending: ' + JSON.stringify(pop.l));
+  await g.mouse.move(1, 990);
+  await g.focus('.card[data-k="unknown"]'); await sleep(30);
+  const nu = D.rows.filter(x => x.compliance_status === 'UNKNOWN').length;
+  ok(nu === 0 || await g.evaluate(() => getComputedStyle(document.querySelector('.card[data-k="unknown"] .pop')).display === 'block'), 'Unknown pop-up on focus');
+  // CSV picker: untick a column, the choice is remembered, order kept
+  await g.click('#f-csv'); await sleep(30);
+  ok(await g.evaluate(n => document.querySelectorAll('#cpk input[type=checkbox]').length === n && [...document.querySelectorAll('#cpk input')].every(b => b.checked), D.cols.length), 'picker: one ticked checkbox per column');
+  await g.click('#cpk input[value="profile"]'); await g.click('#cpk input[value="region"]');
+  fs.readdirSync(dl).forEach(f => fs.unlinkSync(path.join(dl, f)));
+  await g.click('#cpk [data-a="go"]'); got = [];
+  for (let i = 0; i < 50 && !(got = fs.readdirSync(dl).filter(f => f.endsWith('.csv'))).length; i++) await sleep(100);
+  const ph = got.length ? parseCsv(fs.readFileSync(path.join(dl, got[0]), 'utf8').slice(1))[0] : [];
+  ok(ph.length === D.cols.length - 2 && JSON.stringify(ph) === JSON.stringify(D.cols.filter(c => c !== 'profile' && c !== 'region')), 'picker: download without unticked columns, standard order');
+  ok(ph[ph.length - 1] === 'account_name', 'CSV: account_name is the last column');
+  await g.click('#f-csv'); await sleep(30);
+  ok(await g.evaluate(() => !document.querySelector('#cpk input[value="profile"]').checked && document.querySelector('#cpk input[value="engine"]').checked), 'picker: unticked columns remembered (localStorage)');
+  await g.click('#cpk [data-a="none"]'); ok(await g.evaluate(() => [...document.querySelectorAll('#cpk input')].every(b => !b.checked)), 'picker: None');
+  await g.click('#cpk [data-a="all"]'); ok(await g.evaluate(() => [...document.querySelectorAll('#cpk input')].every(b => b.checked)), 'picker: All');
+  await g.click('#cpk [data-a="x"]'); ok(await g.evaluate(() => !document.getElementById('cpk')), 'picker: Cancel');
+  await g.evaluate(() => localStorage.removeItem('rds-pc-csv-off'));
+  // account names: shown as "name (number)" and searchable
+  const named = D.accounts.find(a => a.name);
+  if (named) {
+    const htm = await g.evaluate(() => document.querySelector('#accounts').innerText + ' ' + document.querySelector('header').innerText);
+    ok(htm.includes(named.name + ' (' + named.account + ')'), 'account name shown as name (number)');
+    await g.type('#q', named.name.toUpperCase()); await sleep(50);
+    ok((await vis()) === D.rows.filter(x => x.account_id === named.account).length, 'search matches the account name');
+    await g.click('#f-reset'); await sleep(30);
+  }
+  r.v15 = {engines: v15.er.length, majors: m2, pop: pop.l.length};
   ok(errs.length === 0, 'JS errors: ' + errs.join(' | '));
   ok(net.length === 0, 'network requests: ' + net.join(' '));
   await b.close();

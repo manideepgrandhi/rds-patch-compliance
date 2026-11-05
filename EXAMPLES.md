@@ -68,13 +68,18 @@ aws rds describe-db-engine-versions --engine aurora-postgresql --engine-version 
 
 # 17b. Region counts (JSON keeps the full list, incl. empty regions: .summary.region_overview.empty_regions)
 ./rds_patch_compliance_report.sh -P prod -A -F json | jq '.summary.region_overview'
+
+# 17c. Account names (v1.5.0): set them in the config, otherwise the IAM account alias is used
+printf '111111111111 = prod-payments\n222222222222 = nonprod-shared\n' >> my.conf
+./rds_patch_compliance_report.sh --config my.conf -P prod,nonprod -F json | jq -r '.meta.accounts[] | "\(.account) \(.name)"'
+./rds_patch_compliance_report.sh -P prod -F csv | python3 -c 'import csv,sys; [print(r["account_id"], r["account_name"], r["identifier"]) for r in csv.DictReader(sys.stdin)]'
 ```
 
 Sample text summary (from the test mock, see `samples/sample_report.txt`):
 
 ```
 RDS PATCH COMPLIANCE REPORT - 2026-10-27 09:53 UTC (2026-10-27 15:23 IST)
-Accounts : 111111111111 (prod), 222222222222 (nonprod)   Regions: all enabled
+Accounts : 111111111111 prod-core (prod), 222222222222 (nonprod)   Regions: all enabled
 Rule     : COMPLIANT when RDS lists at most 2 valid minor upgrade target(s) for the current version (NON-COMPLIANT = 3+; UNKNOWN = lookup failed or current version not returned)
 Source   : ValidUpgradeTarget (IsMajorVersionUpgrade=false) of describe-db-engine-versions --engine-version <current>, per server. Latest minor per major = highest valid target seen (current version when up to date)
 Regions  : 28 checked, 3 with databases, 23 empty, 2 errors (discovery probe, 8 in parallel; full scan only where databases or a probe error) - per account x region

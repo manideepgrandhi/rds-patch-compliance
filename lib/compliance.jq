@@ -5,6 +5,7 @@ include "versions" {search: "./"};   # lib/versions.jq: version parsing + minor 
 
 # ------------------------------------------------------------------ helpers
 def h: tostring | @html;
+def alab: if (.name // "") != "" then "\(.name) (\(.account))" else "\(.account) (\(.profile))" end;   # v1.5.0 "name (number)"
 def dash: if . == null or . == "" then "-" else tostring end;
 def glob2re: "^" + (gsub("(?<c>[.+^$(){}|\\[\\]\\\\])"; "\\\(.c)") | gsub("\\*"; ".*") | gsub("\\?"; ".")) + "$";
 def gmatch($globs): . as $v | ($globs | length) == 0 or any($globs[]; . as $g | ($v // "") | test($g | glob2re; "i"));
@@ -175,7 +176,7 @@ def refresh_row:
 def account_breakdown($regs):
   . as $r
   | [ ($r.meta.accounts // [])[] | . as $a | [$r.rows[] | select(.account_id == $a.account)] as $g
-      | {account_id: $a.account, profile: $a.profile, collected_utc: ($a.collected_utc // $r.meta.generated_utc), source: ($a.source // null),
+      | {account_id: $a.account, profile: $a.profile, account_name: ($a.name // ""), collected_utc: ($a.collected_utc // $r.meta.generated_utc), source: ($a.source // null),
          regions_with_databases: ([$regs[] | select(.account_id == $a.account and .status == "databases")] | length),
          errors: ([$r.errors[] | select(.account == $a.account)] | length)} + ($g | region_counts) ]
   | sort_by(.account_id);
@@ -216,7 +217,7 @@ def global_summary:
                 compliance_status: "NOT SCANNED", headless: null, scanned: false} ]
          | sort_by([(if .role == "primary" then 0 else 1 end), .region])) as $mem
       | ([$mem[] | select(.scanned)]) as $sc
-      | {account_id: $g[0].account_id, global_cluster: $g[0].global_cluster, engine: $g[0].engine, global_status: ($meta.status // null),
+      | {account_id: $g[0].account_id, account_name: ($g[0].account_name // ""), global_cluster: $g[0].global_cluster, engine: $g[0].engine, global_status: ($meta.status // null),
          members: $mem, member_count: ($sc | length), not_scanned: ([$mem[] | select(.scanned | not)] | length),
          overall_status: ($sc | map(.compliance_status) | sort_by(st_rank) | .[0]),
          versions: ($sc | map(.current_version) | unique),
@@ -225,7 +226,9 @@ def global_summary:
          pending: ([$g[].pending_actions_detail[] | select(.on | startswith("global ")) | .text] | unique)})
   | sort_by([(.overall_status | st_rank), .account_id, .global_cluster]);
 def finalize:
-  (.rows |= map(refresh_row | del(.upgrade_command)))   # files saved before v1.4.0 carry upgrade_command
+  (($ARGS.named.acct_names // {}) as $cn | .meta.accounts |= ((. // []) | map(. + {name: (if ($cn[.account] // "") != "" then $cn[.account] else (.name // "") end)})))
+  | ([.meta.accounts[] | {key: .account, value: .name}] | from_entries) as $an
+  | (.rows |= map(refresh_row | del(.upgrade_command) | . + {account_name: ($an[.account_id] // "")}))   # files saved before v1.4.0 carry upgrade_command
   | annotate_globals
   | . as $r
   | ($r | global_summary) as $gs
@@ -248,7 +251,7 @@ def finalize:
              globals: $gs, global_databases: ($gs | length), global_members: ([$gs[].member_count] | add // 0),
              global_unknown: ($r.rows | map(select(.global_role == "unknown")) | length),
              global_lookup: ($r.meta.global_lookup // []),
-             regions: $regs,
+             regions: ($regs | map(. + {account_name: ($an[.account_id] // "")})),
              accounts: ($r | account_breakdown($regs)),
              regions_total: ({account_id: "ALL", profile: "", region: "All regions", status: "",
                               errors: ($r.errors | length)} + ($r.rows | region_counts)),
@@ -282,7 +285,7 @@ def text:
   | ([12, ($r.rows[] | (.current_version, .latest_minor_version) | tostring | length)] | max + 2) as $vw
   | ([20, ($s.engines[].engine | length)] | max + 2) as $ew
   | "RDS PATCH COMPLIANCE REPORT - \($r.meta.generated_utc) (\($r.meta.generated_local))",
-    "Accounts : \($r.meta.accounts | map("\(.account) (\(.profile))") | join(", "))" + (if $ro.mode == "explicit" then "   Regions: \($r.meta.regions | length) given" elif $ro.mode == "merge" then "   Merged: \($r.meta.merge.files) file(s)" else "   Regions: all enabled" end),
+    "Accounts : \($r.meta.accounts | map("\(.account)\(if (.name // "") != "" then " " + .name else "" end) (\(.profile))") | join(", "))" + (if $ro.mode == "explicit" then "   Regions: \($r.meta.regions | length) given" elif $ro.mode == "merge" then "   Merged: \($r.meta.merge.files) file(s)" else "   Regions: all enabled" end),
     "Regions  : \($ro | region_line)",
     "Rule     : NON-COMPLIANT when more than \($s.max_behind) valid minor versions behind (same major)",
     (if ($r.meta.filters_text // "") != "" then "Filters  : \($r.meta.filters_text)" else empty end),
@@ -312,9 +315,9 @@ def text:
        + (if .status == "error" then "  see ERRORS" + (if .total == 0 then " (no data)" else " (partial)" end) else "" end)),
     "",
     "PER ACCOUNT",
-    "  " + ("ACCOUNT" | pad(14)) + ("PROFILE" | pad(16)) + ("COLLECTED" | pad(22)) + ("REG" | rpad(4)) + ("TOTAL" | rpad(6)) + ("COMPL" | rpad(7)) + ("NON-C" | rpad(7)) + ("UNKN" | rpad(6)) + ("%COMPL" | rpad(8)) + ("PEND" | rpad(6)),
+    "  " + ("ACCOUNT" | pad(14)) + ("PROFILE" | pad(16)) + ("COLLECTED" | pad(22)) + ("REG" | rpad(4)) + ("TOTAL" | rpad(6)) + ("COMPL" | rpad(7)) + ("NON-C" | rpad(7)) + ("UNKN" | rpad(6)) + ("%COMPL" | rpad(8)) + ("PEND" | rpad(6)) + "  NAME",
     ($s.accounts[] | "  " + (.account_id | pad(14)) + (.profile | pad(16)) + (.collected_utc | pad(22)) + (.regions_with_databases | rpad(4)) + (.total | rpad(6)) + (.compliant | rpad(7)) + (.non_compliant | rpad(7)) + (.unknown | rpad(6))
-       + ((if .pct_compliant == null then "-" else "\(.pct_compliant)%" end) | rpad(8)) + (.with_pending | rpad(6))),
+       + ((if .pct_compliant == null then "-" else "\(.pct_compliant)%" end) | rpad(8)) + (.with_pending | rpad(6)) + "  " + (.account_name // "" | dash)),
     "",
     ($s.engines[] | . as $e
       | "=== \($e.engine): \($e.total) (compliant \($e.compliant), non-compliant \($e.non_compliant), unknown \($e.unknown)) ===",
@@ -341,9 +344,9 @@ def cols: ["account_id","profile","region","resource_type","identifier","members
            "pending_actions_count","pending_actions","deprecated_version","maint_window_utc","maint_window_ist"];
 def csv:
   . as $r
-  | (cols + ["next_maintenance","days_until_maintenance","global_cluster","global_role"] | @csv),
+  | (cols + ["next_maintenance","days_until_maintenance","global_cluster","global_role","account_name"] | @csv),
     ($r.rows[] | . as $x | ([cols[] | $x[.]] | map(if type == "array" then join(" ") elif . == null then "" else . end))
-       + [($x.next_maintenance // ""), ($x.days_until_maintenance // ""), ($x.global_cluster // ""), ($x.global_role // "")] | @csv);
+       + [($x.next_maintenance // ""), ($x.days_until_maintenance // ""), ($x.global_cluster // ""), ($x.global_role // ""), ($x.account_name // "")] | @csv);
 def csv_regions:
   [["account_id","account_id"],["profile","profile"],["region","region"],["status","status"],["total","total"],["compliant","compliant"],
    ["non_compliant","non_compliant"],["unknown","unknown"],["pct_compliant","pct_compliant"],["servers_with_pending_maintenance","with_pending"],
@@ -357,6 +360,12 @@ def alert: {summary: .summary, non_compliant: [.rows[] | select(.compliance_stat
 def stc: {"COMPLIANT": "ok", "NON-COMPLIANT": "bad", "UNKNOWN": "unk"}[.] // "unk";
 def sfc: if startswith("past") then "bad" elif startswith("standard support ends") then "warn" elif . == "ok" then "ok" else "muted" end;
 def card($label; $val; $cls; $sub): "<div class=\"card \($cls)\" data-k=\"\($label | ascii_downcase | gsub("[^a-z]+"; "-"))\"><div class=\"v\">\($val | h)</div><div class=\"l\">\($label | h)</div><div class=\"s\">\($sub | h)</div></div>";
+def cardx($label; $val; $cls; $sub; $act; $ic; $pop):   # v1.5.0 clickable card (role=button)
+  "<div class=\"card \($cls)\" data-k=\"\($label | ascii_downcase | gsub("[^a-z]+"; "-"))\" data-act=\"\($act)\" role=\"button\" tabindex=\"0\">"
+  + (if $ic != "" then "<span class=\"ic\" aria-hidden=\"true\">\($ic)</span>" else "" end)
+  + "<div class=\"v\">\($val | h)</div><div class=\"l\">\($label | h)</div><div class=\"s\">\($sub | h)</div>"
+  + (if $pop then "<div class=\"pop\" role=\"tooltip\"></div>" else "" end) + "</div>";
+def riskc($n; $c): if $n > 0 then $c else "zero" end;
 def dleft: if . == null then "" elif . < 0 then "\(-.) day(s) overdue" elif . == 0 then "today" else "in \(.) day(s)" end;
 def gbadge: if .global_role == "unknown" then " <span class=\"gb unk\" title=\"describe-global-clusters unavailable for this account\">global: unknown</span>"
   elif (.global_cluster // "") != "" then " <span class=\"gb\" title=\"Aurora global database\">global: \(.global_cluster | h) &middot; \(.global_role | h)\(if .member_count == 0 then " (headless)" else "" end)</span>" else "" end;
@@ -373,12 +382,12 @@ def html_row:
             + (.pending_actions_detail | map("<li>\(.text | h)" + (if .auto_applied_after_ist then "<div class=\"sub\">auto-apply \(.auto_applied_after_utc | h) = \(.auto_applied_after_ist | h)</div>" else "" end)
                 + (if .forced_apply_ist then "<div class=\"sub\">forced \(.forced_apply_utc | h) = \(.forced_apply_ist | h)</div>" else "" end) + "</li>") | join("")) + "</ul></details>"
             + (if .days_until_maintenance != null then "<div class=\"sub \(if .days_until_maintenance < 0 then "bad" elif .days_until_maintenance <= 14 then "warn" else "" end)\">next \(.next_maintenance | h) &middot; \(.days_until_maintenance | dleft)</div>" else "" end) end) + "</td><td class=\"small\">\(.maint_window_utc | dash | h) UTC<br>\(.maint_window_ist | dash | h) IST</td>"
-  + "<td>\(.account_id | h)<div class=\"sub\">\(.profile | h) &middot; \(.region | h)</div></td>"
+  + "<td>\(if (.account_name // "") != "" then "\(.account_name) (\(.account_id))" else .account_id end | h)<div class=\"sub\">\(.profile | h) &middot; \(.region | h)</div></td>"
   + "</tr>";
 def rgc: {"databases": "db", "error": "bad", "empty": "unk"}[.] // "unk";
 def pctc: if . == null then "muted" elif . >= 100 then "ok" elif . >= 80 then "warn" else "bad" end;
 def region_tr($foot):
-  "<tr\(if $foot then " class=\"foot\"" else " data-k=\"\(.account_id | h)|\(.region | h)\"" end)><td>\(if $foot then "<b>All regions</b>" else (.account_id | h) + "<div class=\"sub\">\(.profile | h)</div>" end)</td>"
+  "<tr\(if $foot then " class=\"foot\"" else " data-k=\"\(.account_id | h)|\(.region | h)\"" end)><td>\(if $foot then "<b>All regions</b>" else (if (.account_name // "") != "" then "\(.account_name) (\(.account_id))" else .account_id end | h) + "<div class=\"sub\">\(.profile | h)</div>" end)</td>"
   + "<td>\(if $foot then "" else "<b>\(.region | h)</b>" end)</td>"
   + "<td data-s=\"\(if $foot then 9 else (.status | region_rank) end)\">\(if $foot then "" else "<span class=\"st \(.status | rgc)\">\(.status | h)</span>" + (if .status == "error" then "<div class=\"sub\">see Errors\(if .total == 0 then ", no data" else ", partial" end)</div>" else "" end) end)</td>"
   + "<td class=\"n\" data-s=\"\(.total)\"><b>\(.total)</b></td><td class=\"n \(if .compliant > 0 then "ok" else "" end)\" data-s=\"\(.compliant)\">\(.compliant)</td>"
@@ -392,7 +401,7 @@ def html_regions($r; $s; $ro; $multi):
   + ($r | shown_regions | map(region_tr(false)) | join("")) + "</tbody><tfoot>" + ($s.regions_total | region_tr(true)) + "</tfoot></table>"
   + "</section>";
 def account_tr:
-  "<tr data-a=\"\(.account_id | h)\"><td><b>\(.account_id | h)</b><div class=\"sub\">\(.profile | h)</div></td><td class=\"small\">\(.collected_utc | dash | h)\(if .source then "<div class=\"sub\">\(.source | h)</div>" else "" end)</td>"
+  "<tr data-a=\"\(.account_id | h)\"><td><b>\(if (.account_name // "") != "" then "\(.account_name) (\(.account_id))" else .account_id end | h)</b><div class=\"sub\">\(.profile | h)</div></td><td class=\"small\">\(.collected_utc | dash | h)\(if .source then "<div class=\"sub\">\(.source | h)</div>" else "" end)</td>"
   + "<td class=\"n\" data-s=\"\(.regions_with_databases)\">\(.regions_with_databases)\(if .errors > 0 then "<div class=\"sub bad\">\(.errors) error(s)</div>" else "" end)</td>"
   + "<td class=\"n\" data-s=\"\(.total)\"><b>\(.total)</b></td><td class=\"n \(if .compliant > 0 then "ok" else "" end)\" data-s=\"\(.compliant)\">\(.compliant)</td>"
   + "<td class=\"n \(if .non_compliant > 0 then "bad" else "" end)\" data-s=\"\(.non_compliant)\">\(.non_compliant)</td><td class=\"n\" data-s=\"\(.unknown)\">\(.unknown)</td>"
@@ -414,7 +423,7 @@ def html_globals($s):
   "<section id=\"globals\"><h3>Global databases <span class=\"muted\">\($s.global_databases) &middot; \($s.global_members) members &middot; overall = worst member</span></h3>"
   + "<table class=\"globals\" id=\"globals\"><thead><tr><th>Global DB</th><th>Account</th><th>Engine</th><th>Overall</th><th>Role</th><th>Region</th><th>Cluster</th><th>Version</th><th>Status</th><th>Flags</th></tr></thead><tbody>"
   + ([$s.globals[] | . as $g | (.members | length) as $n | .members | to_entries[] | .key as $k | .value
-      | "<tr data-g=\"\($g.global_cluster | h)\">" + (if $k == 0 then "<td rowspan=\"\($n)\"><b>\($g.global_cluster | h)</b></td><td rowspan=\"\($n)\">\($g.account_id | h)</td><td rowspan=\"\($n)\">\($g.engine | h)</td><td rowspan=\"\($n)\"><span class=\"st \($g.overall_status | stc)\">\($g.overall_status | h)</span></td>" else "" end)
+      | "<tr data-g=\"\($g.global_cluster | h)\">" + (if $k == 0 then "<td rowspan=\"\($n)\"><b>\($g.global_cluster | h)</b></td><td rowspan=\"\($n)\">\(if $g.account_name != "" then "\($g.account_name) (\($g.account_id))" else $g.account_id end | h)</td><td rowspan=\"\($n)\">\($g.engine | h)</td><td rowspan=\"\($n)\"><span class=\"st \($g.overall_status | stc)\">\($g.overall_status | h)</span></td>" else "" end)
         + "<td>\(.role | h)</td><td>\(.region | h)</td><td>\(.identifier | h)\(if .headless then " <span class=\"muted\">(headless)</span>" else "" end)</td><td class=\"mono\">\(.current_version | dash | h)</td>"
         + "<td><span class=\"st \(.compliance_status | stc)\">\(.compliance_status | h)</span>\(if .versions_behind != null then "<div class=\"sub\">\(.versions_behind) behind</div>" else "" end)</td>"
         + (if $k == 0 then "<td rowspan=\"\($n)\" class=\"small\">" + ([ (if $g.region_status_mismatch then "<span class=\"st bad\">region status mismatch</span>" else empty end),
@@ -423,10 +432,11 @@ def html_globals($s):
               ($g.pending[] | "pending: " + (. | h)) ] | if length == 0 then "-" else join("<br>") end) + "</td>" else "" end) + "</tr>"] | join(""))
   + "</tbody></table></section>" end;
 def page_data($r):
-  {cols: (cols + ["next_maintenance","days_until_maintenance","global_cluster","global_role"]),
+  {cols: (cols + ["next_maintenance","days_until_maintenance","global_cluster","global_role","account_name"]),
    csv_acct: (if ($r.meta.accounts | length) == 1 then $r.meta.accounts[0].account else "" end), csv_stamp: ($r.meta.generated_utc | gsub("[^0-9]"; "") | .[0:12]),
    nc_only: $nc_only,
-   accounts: [$r.meta.accounts[] | {account, profile}],
+   accounts: [$r.meta.accounts[] | {account, profile, name: (.name // "")}],
+   engines: [$r.summary.engines[] | {engine, anchor, majors: [.majors[] | {major, latest_minor, standard_support_end, support_flag}]}],
    rows: [$r.rows[] | del(.pending_actions_detail, .excluded_targets, .version_warnings, .tags, .arn, .note, .global_arn, .global_pending_raw, .upgrade_command)]}
   | tojson | gsub("<"; "\\u003c") | gsub("\u2028"; "\\u2028") | gsub("\u2029"; "\\u2029");
 def html:
@@ -435,8 +445,25 @@ def html:
   | "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\"><title>RDS patch compliance - \($r.meta.generated_utc | h)</title><style>"
   + "body{font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;margin:0;background:#f5f6f8;color:#1f2933}header{background:#232f3e;color:#fff;padding:16px 26px}"
   + "header h1{margin:0;font-size:21px}header p{margin:4px 0 0;color:#c9d1d9;font-size:13px}main{padding:16px 26px}"
-  + ".cards{display:flex;flex-wrap:wrap;gap:12px;margin-bottom:14px}.card{background:#fff;border-radius:10px;padding:12px 16px;min-width:150px;box-shadow:0 1px 3px rgba(0,0,0,.12);border-top:4px solid #9aa5b1}"
-  + ".card .v{font-size:26px;font-weight:700}.card .l{font-size:13px;font-weight:600}.card .s{font-size:12px;color:#52606d}.card.ok{border-color:#2e7d32}.card.bad{border-color:#c62828}.card.warn{border-color:#e08a00}.card.unk{border-color:#7b8794}"
+  + ".cards{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:10px}.card{position:relative;background:#fff;border-radius:8px;padding:8px 12px;min-width:130px;box-shadow:0 1px 3px rgba(0,0,0,.12);border-left:5px solid #c3cad3;cursor:pointer;outline:none}"
+  + ".card:hover,.card:focus-visible{box-shadow:0 0 0 2px #232f3e33,0 1px 3px rgba(0,0,0,.12)}.card.on{box-shadow:0 0 0 2px #232f3e;background:#eef2f7}"
+  + ".card .v{font-size:20px;font-weight:700}.card .l{font-size:12.5px;font-weight:600}.card .s{font-size:11.5px;color:#52606d}"
+  + ".cards.stat .card{min-width:190px;padding:12px 16px 12px 52px}.cards.stat .card .v{font-size:28px}.cards.risk{gap:8px}.cards.risk .card{min-width:0;padding:6px 10px}.cards.risk .card .s{max-width:190px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.toolbar select{max-width:175px}.card .ic{position:absolute;left:14px;top:14px;width:26px;height:26px;border-radius:50%;text-align:center;line-height:26px;font-weight:700;color:#fff;background:#7b8794}"
+  + ".card.c-tot{border-left-color:#232f3e}.card.c-tot .ic{background:#232f3e}.card.c-ok{border-left-color:#2e7d32}.card.c-ok .ic{background:#2e7d32}.card.c-bad{border-left-color:#c62828}.card.c-bad .ic{background:#c62828}.card.c-unk{border-left-color:#7b8794}"
+  + ".card.bad{border-left-color:#c62828}.card.bad .v{color:#c62828}.card.warn{border-left-color:#e08a00}.card.warn .v{color:#b26a00}.card.info{border-left-color:#5c6bc0}.card.zero{border-left-color:#c3cad3}.card.zero .v{color:#9aa5b1}"
+  + ".pop{display:none;position:absolute;left:0;top:100%;margin-top:6px;z-index:20;background:#232f3e;color:#fff;border-radius:6px;padding:8px 10px;font-size:12px;min-width:200px;white-space:nowrap;box-shadow:0 4px 12px rgba(0,0,0,.25)}"
+  + ".card:hover .pop.has,.card:focus .pop.has{display:block}.pop div{display:flex;justify-content:space-between;gap:16px}.pop b{font-weight:700}"
+  + "#engines h2 .tgl{font-size:12.5px;font-weight:400;margin-left:14px;color:#52606d}.ftag{display:none;font-size:11px;font-weight:600;background:#fff4e0;color:#b26a00;border-radius:9px;padding:1px 8px;margin-left:8px}.filtered .ftag{display:inline-block}"
+  + ".escroll{max-height:420px;overflow:auto;display:inline-block;box-shadow:0 1px 3px rgba(0,0,0,.12);margin-bottom:16px;border-radius:4px}.escroll table{box-shadow:none;margin:0}"
+  + "table.eng{min-width:900px}table.eng th[data-c]{cursor:pointer}table.eng th[data-c]:hover{background:#dde3ea}table.eng th.sd::after{content:' ▾'}table.eng th.sa::after{content:' ▴'}"
+  + "table.eng tr.er td{background:#fff;font-weight:600}table.eng tr.mr td{background:#fafbfc;font-weight:400}table.eng tr.mr td:first-child{padding-left:34px}"
+  + ".car{border:0;background:none;cursor:pointer;font-size:13px;width:20px;padding:0;color:#52606d}.car[aria-expanded=true]{transform:rotate(90deg)}.car.none{visibility:hidden}"
+  + "a.en{color:#0d47a1;text-decoration:none;cursor:pointer}a.en:hover{text-decoration:underline}.lnk{cursor:pointer;text-decoration:underline dotted;}.lnk:hover{color:#0d47a1}td.n .bar{min-width:110px}"
+  + "h2.secs button{font-size:12px;font-weight:400;margin-left:8px;padding:3px 9px;border:1px solid #9aa5b1;border-radius:5px;background:#fff;cursor:pointer}"
+  + "details.eng-sec{margin-bottom:8px}details.eng-sec>summary{cursor:pointer;background:#fff;padding:8px 12px;border-radius:6px;box-shadow:0 1px 3px rgba(0,0,0,.12);font-size:14px}details.eng-sec[open]>summary{margin-bottom:6px}details.eng-sec .es{font-size:12.5px;margin-left:6px}"
+  + "#cpk{position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:50;display:flex;align-items:flex-start;justify-content:center;padding-top:60px}#cpk .box{background:#fff;border-radius:8px;width:420px;max-height:75vh;overflow:auto;box-shadow:0 8px 30px rgba(0,0,0,.3)}"
+  + "#cpk .hd{position:sticky;top:0;background:#f0f3f7;padding:10px 12px;border-bottom:1px solid #dde3ea}#cpk .hd b{display:block;margin-bottom:6px}#cpk .hd button{margin-right:6px;padding:4px 10px;border:1px solid #9aa5b1;border-radius:5px;background:#fff;cursor:pointer;font-size:12.5px}#cpk .hd button.pri{background:#232f3e;color:#fff;border-color:#232f3e}"
+  + "#cpk label{display:block;padding:3px 12px;font-size:12.5px;font-family:SFMono-Regular,Consolas,monospace}#cpk label:hover{background:#f5f6f8}"
   + "table{border-collapse:collapse;background:#fff;font-size:12.5px;box-shadow:0 1px 3px rgba(0,0,0,.12);margin-bottom:16px}th{background:#e9edf2;text-align:left;padding:6px 8px;position:sticky;top:0}td{padding:6px 8px;border-top:1px solid #e6e9ee;vertical-align:top}"
   + "table.main th{cursor:pointer}table.main th:hover{background:#dde3ea}.st{display:inline-block;padding:2px 7px;border-radius:10px;font-weight:700;font-size:11.5px;white-space:nowrap}"
   + ".st.ok{background:#e6f4ea;color:#1b5e20}.st.bad{background:#fdecea;color:#b71c1c}.st.unk{background:#eceff1;color:#455a64}td.ok{color:#2e7d32}td.bad{color:#c62828;font-weight:600}td.warn{color:#b26a00;font-weight:600}td.muted,.muted{color:#7b8794}"
@@ -449,32 +476,37 @@ def html:
   + ".bar{height:4px;background:#e6e9ee;border-radius:2px;margin-top:3px;min-width:70px}.bar i{display:block;height:4px;border-radius:2px;background:#2e7d32}.bar i.warn{background:#e08a00}.bar i.bad{background:#c62828}"
   + ".toolbar{position:sticky;top:0;z-index:5;background:#f5f6f8;display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:8px 0;margin-bottom:6px;border-bottom:1px solid #dde3ea}"
   + ".toolbar select,.toolbar input,.toolbar button{padding:6px 8px;border:1px solid #9aa5b1;border-radius:6px;font-size:13px;background:#fff}.toolbar input#q{width:240px;margin:0}.toolbar button{cursor:pointer}.toolbar button.pri{background:#232f3e;color:#fff;border-color:#232f3e}"
-  + ".toolbar .cnt{color:#52606d;font-size:12.5px}.filtered .card{border-style:dashed}.flt-note{display:none;color:#b26a00;font-size:12px;margin:0 0 8px}.filtered .flt-note{display:block}"
+  + ".toolbar .cnt{color:#52606d;font-size:12.5px}.flt-note{display:none;color:#b26a00;font-size:12px;margin:0 0 8px}.filtered .flt-note{display:block}"
   + ".about{margin:18px 0;background:#fff;border-radius:8px;padding:8px 14px;box-shadow:0 1px 3px rgba(0,0,0,.12);font-size:12.5px}.about summary{cursor:pointer;font-weight:600}footer{padding:10px 26px 24px;color:#7b8794;font-size:12px}</style></head><body>"
-  + "<header id=\"top\"><h1>RDS patch compliance report</h1><p>\($r.meta.generated_utc | h) &middot; \($r.meta.generated_local | h) &middot; accounts \($r.meta.accounts | map("\(.account) (\(.profile))") | join(", ") | h) &middot; Regions: \($ro | region_line)\(if $r.meta.merge then " &middot; merged from \($r.meta.merge.files) file(s)" else "" end)</p></header><main>"
+  + "<header id=\"top\"><h1>RDS patch compliance report</h1><p>\($r.meta.generated_utc | h) &middot; \($r.meta.generated_local | h) &middot; accounts \($r.meta.accounts | map(alab) | join(", ") | h) &middot; Regions: \($ro | region_line)\(if $r.meta.merge then " &middot; merged from \($r.meta.merge.files) file(s)" else "" end)</p></header><main>"
   + "<div class=\"toolbar\" id=\"filters\"><select id=\"f-acct\" aria-label=\"Account\"><option value=\"\">All accounts</option></select><select id=\"f-region\" aria-label=\"Region\"><option value=\"\">All regions</option></select>"
   + "<select id=\"f-engine\" aria-label=\"Engine\"><option value=\"\">All engines</option></select><select id=\"f-status\" aria-label=\"Compliance status\"><option value=\"\">All statuses</option></select><select id=\"f-global\" aria-label=\"Global cluster\"><option value=\"\">Global cluster: all</option></select>"
-  + "<input id=\"q\" type=\"search\" placeholder=\"Search DB name (cluster / instance / member)\"><button id=\"f-reset\" type=\"button\">Reset</button><button id=\"f-csv\" class=\"pri\" type=\"button\">Export CSV</button><span class=\"cnt\" id=\"f-count\"></span></div>"
-  + "<p class=\"flt-note\">Filtered view: cards, Per account and Per region show only the servers matching the filters. Per engine / major always shows all servers.</p>"
+  + "<input id=\"q\" type=\"search\" placeholder=\"Search DB or account name\"><select id=\"f-flag\" aria-label=\"Flag\"><option value=\"\">Flag: any</option><option value=\"past\">Extended Support</option><option value=\"near\">Support ending</option><option value=\"aoff\">Auto minor upgrade off</option><option value=\"pend\">Pending maintenance</option><option value=\"dep\">Version not returned</option></select>"
+  + "<button id=\"f-reset\" type=\"button\">Reset</button><button id=\"f-csv\" class=\"pri\" type=\"button\">Export CSV</button><span class=\"cnt\" id=\"f-count\"></span></div>"
+  + "<p class=\"flt-note\">Filtered view: cards and tables show only matching servers.</p>"
   + "<p class=\"muted rule\"><b>Rule:</b> NON-COMPLIANT when more than \($s.max_behind) valid minor versions behind (same major). <a href=\"#about\">About this report</a></p>"
-  + "<div class=\"cards\">" + card("Servers / clusters"; $s.total; ""; "\($r.meta.accounts | length) account(s), \($r.meta.regions | length) region(s)")
-  + card("Compliant"; $s.compliant; "ok"; "\($s.pct_compliant)% of all") + card("Non-compliant"; $s.non_compliant; (if $s.non_compliant > 0 then "bad" else "ok" end); "> \($s.max_behind) behind")
-  + card("Unknown"; $s.unknown; "unk"; "lookup failed / version not returned")
-  + card("Extended Support"; $s.past_standard_support; (if $s.past_standard_support > 0 then "bad" else "ok" end); "past standard support")
-  + card("Support ending"; $s.nearing_end_of_support; (if $s.nearing_end_of_support > 0 then "warn" else "ok" end); "within \($s.warn_days) days")
-  + card("Auto minor upgrade off"; $s.auto_minor_off; (if $s.auto_minor_off > 0 then "warn" else "ok" end); "incl. mixed clusters")
-  + card("Pending maintenance"; $s.with_pending; (if $s.with_pending > 0 then "warn" else "ok" end); ($s.pending_by_action | to_entries | map("\(.key) \(.value)") | join(", ") | if . == "" then "none" else . end))
-  + card("Version not returned"; $s.deprecated; (if $s.deprecated > 0 then "bad" else "ok" end); "deprecated / not offered")
-  + card("Global databases"; $s.global_databases; (if $s.global_unknown > 0 then "unk" else "" end); "\($s.global_members) members" + (if $s.global_unknown > 0 then "; \($s.global_unknown) unknown" else "" end))
-  + card("Regions"; "\($ro.with_databases) / \($ro.checked)"; (if $ro.error > 0 then "bad" else "" end); "with databases; \($ro.empty) empty, \($ro.error) error(s)") + "</div>"
+  + "<div class=\"cards stat\">" + cardx("Servers / clusters"; $s.total; "c-tot"; "\($r.meta.accounts | length) account(s), \($r.meta.regions | length) region(s)"; "reset"; "#"; false)
+  + cardx("Compliant"; $s.compliant; "c-ok"; "\($s.pct_compliant)% of all"; "s:COMPLIANT"; "✓"; false)
+  + cardx("Non-compliant"; $s.non_compliant; "c-bad"; "> \($s.max_behind) behind"; "s:NON-COMPLIANT"; "✕"; true)
+  + cardx("Unknown"; $s.unknown; "c-unk"; "lookup failed / not returned"; "s:UNKNOWN"; "?"; true) + "</div>"
+  + "<div class=\"cards risk\">"
+  + cardx("Extended Support"; $s.past_standard_support; riskc($s.past_standard_support; "bad"); "past standard support"; "f:past"; ""; false)
+  + cardx("Support ending"; $s.nearing_end_of_support; riskc($s.nearing_end_of_support; "warn"); "within \($s.warn_days) days"; "f:near"; ""; false)
+  + cardx("Auto minor upgrade off"; $s.auto_minor_off; riskc($s.auto_minor_off; "warn"); "incl. mixed clusters"; "f:aoff"; ""; false)
+  + cardx("Pending maintenance"; $s.with_pending; riskc($s.with_pending; "warn"); ($s.pending_by_action | to_entries | map("\(.key) \(.value)") | join(", ") | if . == "" then "none" else . end); "f:pend"; ""; false)
+  + cardx("Version not returned"; $s.deprecated; riskc($s.deprecated; "bad"); "deprecated / not offered"; "f:dep"; ""; false)
+  + cardx("Global databases"; $s.global_databases; (if $s.global_unknown > 0 then "warn" else riskc($s.global_databases; "info") end); "\($s.global_members) members" + (if $s.global_unknown > 0 then "; \($s.global_unknown) unknown" else "" end); "g:__all"; ""; false)
+  + cardx("Regions"; "\($ro.with_databases) / \($ro.checked)"; (if $ro.error > 0 then "bad" else "info" end); "with DBs; \($ro.empty) empty, \($ro.error) error(s)"; "scroll:regions"; ""; false) + "</div>"
+  + "<section id=\"engines\"><h2>Engine compliance <span class=\"ftag\">Filtered</span><label class=\"tgl\"><input type=\"checkbox\" id=\"eng-all\"> Show all majors</label></h2>"
+  + "<div class=\"escroll\"><table class=\"eng\" id=\"eng-tbl\"><thead><tr><th data-c=\"e\">Engine</th><th data-c=\"n\">Servers</th><th data-c=\"p\">% compliant</th><th data-c=\"nc\">Non-compliant</th><th data-c=\"s\">Support</th><th>Latest minor</th></tr></thead><tbody>"
+  + ([$s.engines[] | "<tr class=\"er\"><td><a href=\"#\(.anchor)\">\(.engine | h)</a></td><td class=\"n\">\(.total)</td><td class=\"n\">\(.pct_compliant)%</td><td class=\"n\">\(.non_compliant)</td><td></td><td></td></tr>"] | join(""))
+  + "</tbody></table></div></section>"
   + html_accounts($s) + html_regions($r; $s; $ro; $multi) + html_globals($s)
-  + "<h3>Per engine and major version</h3><table><tr><th>Engine</th><th>Major</th><th>Total</th><th>Compliant</th><th>Non-compliant</th><th>Unknown</th><th>Latest minor</th><th>Support</th></tr>"
-  + ([$s.engines[] | . as $e | .majors[] | "<tr><td><a href=\"#\($e.anchor)\">\($e.engine | h)</a></td><td>\(.major | h)</td><td>\(.total)</td><td class=\"ok\">\(.compliant)</td><td class=\"\(if .non_compliant > 0 then "bad" else "" end)\">\(.non_compliant)</td><td>\(.unknown)</td><td class=\"mono\">\(.latest_minor | dash | h)</td><td class=\"\(.support_flag | sfc)\">\(.support_flag | dash | h)\(if .standard_support_end != null then "<div class=\"sub\">standard end \(.standard_support_end)</div>" else "" end)</td></tr>"] | join(""))
-  + "</table>"
+  + "<h2 class=\"secs\">Servers by engine <button type=\"button\" id=\"x-open\">Expand all</button><button type=\"button\" id=\"x-close\">Collapse all</button></h2>"
   + ([$s.engines[] | . as $e
-      | "<section id=\"\($e.anchor)\"><h2>\($e.engine | h) <span class=\"muted\">\($e.total) &middot; compliant \($e.compliant) &middot; non-compliant \($e.non_compliant) &middot; unknown \($e.unknown) &middot; \($e.pct_compliant)% &middot; <a href=\"#top\">top</a></span></h2>"
+      | "<details class=\"eng-sec\" id=\"\($e.anchor)\" data-e=\"\($e.engine | h)\"><summary><b>\($e.engine | h)</b> <span class=\"es muted\">\($e.total) &middot; non-compliant \($e.non_compliant) &middot; \($e.pct_compliant)%</span></summary>"
         + "<table class=\"main\"><thead><tr><th>Status</th><th>Behind</th><th>Identifier / members</th><th>Type</th><th>Major</th><th>Current</th><th>Latest minor</th><th>Valid minor targets</th><th>Auto-upgrade default</th><th>Auto minor</th><th>Standard end</th><th>Extended end</th><th>Support</th><th>Pending maint.</th><th>Maint. window</th><th>Account</th></tr></thead><tbody>"
-        + ([$irows[] | select(.engine == $e.engine) | html_row] | join("")) + "</tbody></table></section>"] | join(""))
+        + ([$irows[] | select(.engine == $e.engine) | html_row] | join("")) + "</tbody></table></details>"] | join(""))
   + (if ($r.rows | length) == 0 then "<p>No servers matched.</p>" else "" end)
   + (if ($r.errors | length) > 0 then "<h2>Errors</h2><ul>" + ($r.errors | map("<li>\(.profile | h)/\(.region | h): \(.call | h): \(.message | h)</li>") | join("")) + "</ul>" else "" end)
   + html_sources($r)

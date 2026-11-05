@@ -47,7 +47,7 @@ if argv[:3] == ["configure", "get", "region"]:
     sys.exit(1)
 
 GLOBAL_VAL = {"--output", "--profile", "--region", "--cli-connect-timeout", "--cli-read-timeout"}
-ALLOWED = {("sts", "get-caller-identity"): set(), ("ec2", "describe-regions"): set(),
+ALLOWED = {("sts", "get-caller-identity"): set(), ("iam", "list-account-aliases"): set(), ("ec2", "describe-regions"): set(),
            ("rds", "describe-db-clusters"): {"--max-records", "--query"}, ("rds", "describe-db-instances"): {"--max-records", "--query"},
            ("rds", "describe-pending-maintenance-actions"): set(), ("rds", "describe-global-clusters"): set(),
            ("rds", "describe-db-engine-versions"): {"--engine", "--engine-version"}, ("docdb", "describe-db-engine-versions"): {"--engine", "--engine-version"},
@@ -97,6 +97,13 @@ def out(d):
 
 if (SVC, OP) == ("sts", "get-caller-identity"):
     out({"UserId": "AIDAMOCKUSER", "Account": ACCT, "Arn": "arn:aws:iam::%s:user/dba" % ACCT})
+if (SVC, OP) == ("iam", "list-account-aliases"):
+    # prod -> alias, nonprod -> AccessDenied (no iam:ListAccountAliases), dev -> no alias; MOCK_ALIAS overrides (JSON list)
+    if ACCT == "222222222222" or os.environ.get("MOCK_ALIAS_DENY"):
+        fail("AccessDenied", "ListAccountAliases", "User: arn:aws:iam::%s:user/dba is not authorized to perform: iam:ListAccountAliases" % ACCT)
+    if "MOCK_ALIAS" in os.environ:
+        out({"AccountAliases": json.loads(os.environ["MOCK_ALIAS"])})
+    out({"AccountAliases": ["prod-core"] if ACCT == "111111111111" else []})
 if (SVC, OP) == ("ec2", "describe-regions"):
     out({"Regions": [{"Endpoint": "ec2.%s.amazonaws.com" % r, "RegionName": r, "OptInStatus": "opt-in-not-required"}
                      for r in (DISCOVER_REGIONS if SCEN == "discover" else ("us-east-1", "ap-south-1", "eu-west-1"))]})
