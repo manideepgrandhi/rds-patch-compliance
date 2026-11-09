@@ -128,3 +128,96 @@ Sample output: [samples/sample_summary.txt](samples/sample_summary.txt), [sample
 ./rds_patch_compliance_summary.sh --merge data/*.json --max-behind 1 --fail-on-noncompliant   # exit 5 if any NON-COMPLIANT
 ./rds_patch_compliance_summary.sh --merge data --alert-email dba@example.com                  # alert from merged data
 ```
+
+
+## Exceptions (v1.6.0)
+
+Approved exceptions for servers you know are non-compliant. Same shared file as rds-backup-compliance and rds-compliance-report. Matched, unexpired entries (scope `patch` or `patch,backup`) show as **Compliant (exception)** / `COMPLIANT (EXCEPTION)`, count as compliant in every %, and appear in the summary as `COMPLIANT N (incl. X exceptions)`. The HTML gets an Exception column and an Exceptions quick filter (all / exceptions only / non-exceptions / expiring soon or no longer needed / expired). Flags: **expiring soon** (14 days or less), **no longer needed** (already compliant), **exception expired**. CSV columns at the end: `exception`, `exception_reason`, `exception_expires`, `exception_flag`, `actual_status`. With no file the reports are exactly as before. Applied when the report is built (direct scan or `--merge`); `--save-data` files never change.
+
+### 1. Set up the file
+
+```bash
+cp /home/cloudshell-user/rds-patch-compliance/compliance_exceptions.conf.example \
+   /home/cloudshell-user/rds-patch-compliance/compliance_exceptions.conf
+vi /home/cloudshell-user/rds-patch-compliance/compliance_exceptions.conf
+```
+
+One entry per line, all five fields required (`account_id | identifier | scope | expires | reason`). Sample:
+
+```text
+# account_id | identifier         | scope        | expires    | reason
+111111111111 | legacy-aurora-pg12 | patch        | 2026-12-31 | Decommission in December, CHG-1234 (owner: dba-team)
+111111111111 | reports-pg         | patch,backup | 2027-03-31 | Vendor-pinned version, backups by vendor tool | INC-77
+111111111111 | dev-docdb          | backup       | 2027-01-31 | Backup-only waiver (not applied by the patch tool)
+```
+
+`expires` is mandatory `YYYY-MM-DD` (UTC), last day the exception applies. `#` comments and blank lines are ignored. The real `compliance_exceptions.conf` is in `.gitignore`.
+
+### 2. Default run (file next to the script)
+
+If `compliance_exceptions.conf` sits next to the script it is picked up automatically:
+
+```bash
+/home/cloudshell-user/rds-patch-compliance/rds_patch_compliance_report.sh -P prod --all-regions \
+  -F html,csv,txt -o /home/cloudshell-user/compliance
+```
+
+### 3. Custom location
+
+```bash
+mkdir -p /home/cloudshell-user/configs
+cp /home/cloudshell-user/rds-patch-compliance/compliance_exceptions.conf.example \
+   /home/cloudshell-user/configs/compliance_exceptions.conf
+# edit /home/cloudshell-user/configs/compliance_exceptions.conf, then:
+/home/cloudshell-user/rds-patch-compliance/rds_patch_compliance_report.sh -P prod --all-regions \
+  -F html,csv,txt -o /home/cloudshell-user/compliance \
+  --exceptions /home/cloudshell-user/configs/compliance_exceptions.conf
+```
+
+Config file alternative: `exceptions = /home/cloudshell-user/configs/compliance_exceptions.conf` (CLI `--exceptions` wins).
+
+### 4. Multi-account: `--save-data` then `--merge`
+
+Exceptions are applied when the report is built. `--save-data` files are unchanged (with or without `--exceptions`).
+
+```bash
+# CloudShell, once per account (read-only) -> rds_patch_<ACCOUNT>_<YYYYMMDD>.json
+/home/cloudshell-user/rds-patch-compliance/rds_patch_compliance_report.sh --all-regions --save-data \
+  -o /home/cloudshell-user/data
+
+# Offline merge: exceptions applied here
+/home/cloudshell-user/rds-patch-compliance/rds_patch_compliance_report.sh \
+  --merge /home/cloudshell-user/data -F html,csv,txt -o /home/cloudshell-user/compliance \
+  --exceptions /home/cloudshell-user/configs/compliance_exceptions.conf
+```
+
+### 5. Validation error (run stops, exit 1, before any AWS call)
+
+A missing field, a bad account / scope / date, or a duplicate account + identifier for the same scope stops the run with `file:line`. Real captured output:
+
+Invalid date (2026 is not a leap year):
+
+```text
+2026-11-09 16:08:06 [ERROR] Exceptions /home/cloudshell-user/rds-patch-compliance/compliance_exceptions.conf:3: expires '2026-02-29' is not a valid date
+```
+
+Duplicate (case-insensitive identifier; `patch,backup` collides with an existing `patch` row):
+
+```text
+2026-11-09 16:08:06 [ERROR] Exceptions /home/cloudshell-user/rds-patch-compliance/compliance_exceptions.conf:3: duplicate entry for 111111111111 Good-DB (patch), already on line 2
+```
+
+Fix: correct the date to a real `YYYY-MM-DD`, or remove / change the duplicate line so each account + identifier appears at most once per scope (`patch` and `backup` may both be listed, either as two lines or as `patch,backup`).
+
+### 6. Turning exceptions off
+
+```bash
+# rename (keep for later)
+mv /home/cloudshell-user/rds-patch-compliance/compliance_exceptions.conf \
+   /home/cloudshell-user/rds-patch-compliance/compliance_exceptions.conf.off
+
+# or remove
+rm /home/cloudshell-user/rds-patch-compliance/compliance_exceptions.conf
+```
+
+With no file (and no `--exceptions`), the report matches the pre-exceptions behaviour.
