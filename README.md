@@ -263,6 +263,29 @@ With `-o DIR` each format is written to `DIR/<prefix>_[<ACCOUNTID>_]<YYYYmmdd_HH
 
 **Downloading from CloudShell:** copy the full path from the `Wrote ...` log line, then **Actions > Download file** and paste it, e.g. `/home/cloudshell-user/compliance/rds_patch_compliance_20261015_093000.html`. For several files: `cd ~ && zip -r compliance.zip compliance` and download `/home/cloudshell-user/compliance.zip`.
 
+## Compliance exceptions (v1.6.0)
+
+Approved exceptions for servers you know are non-compliant (decommission planned, vendor-pinned version, and so on). They come from one shared file, `compliance_exceptions.conf`. rds-patch-compliance, rds-backup-compliance and rds-compliance-report all use the same file and format.
+
+```text
+# account_id | identifier | scope | expires | reason
+111111111111 | legacy-aurora-pg12 | patch        | 2026-12-31 | Decommission in December, CHG-1234
+111111111111 | reports-pg         | patch,backup | 2027-03-31 | Vendor-pinned version | INC-77
+```
+
+* **File:** `--exceptions FILE` (config `exceptions = FILE`). The default is `compliance_exceptions.conf` next to the script, if present. With no file the feature is off and the reports are exactly as before. Start from [compliance_exceptions.conf.example](compliance_exceptions.conf.example). The real file is in `.gitignore`.
+* **Format:** all five fields are required. account_id is 12 digits. The identifier is exact and case-insensitive, with no wildcards and no region. scope is `patch`, `backup` or `patch,backup`. expires is a mandatory `YYYY-MM-DD` (UTC) and is the last day the exception applies. `#` comments and blank lines are ignored.
+* **Validation:** strict. A missing field, a bad account, scope or date, or a duplicate account + identifier for the same scope stops the run (exit 1) with `file:line`.
+* **Matched, not expired:** shown as **Compliant (exception)** and counted as compliant in every %. The evaluated status is kept in `actual_status`. Flags: **expiring soon** (14 days or less) and **no longer needed** (the server is compliant anyway).
+* **Expired:** the server is evaluated normally and flagged **exception expired**. The log warns about expired entries and about entries that match no server.
+* **When applied:** only when the report is built. `--save-data` files never change.
+* **Outputs:**
+  * Summary: `COMPLIANT N (incl. X exceptions)`. The Compliant card pop-up shows Compliant, Non-compliant and "Exceptions expiring soon or no longer needed" (that line only when the count is above 0).
+  * HTML: an Exception column (reason, expiry, flag badge) and an **Exceptions** quick filter: all, exceptions only, non-exceptions, expiring soon or no longer needed, expired. The filter combines with the other filters, and the counts, tables and CSV export follow it.
+  * CSV / JSON: the CSV status column shows `COMPLIANT (EXCEPTION)`, and JSON keeps `COMPLIANT` with `"exception": "yes"`. Both get five fields at the end: `exception` (yes/no/expired), `exception_reason`, `exception_expires`, `exception_flag`, `actual_status`.
+  * Text: an EXCEPTIONS section.
+* `--fail-on-noncompliant` and `--non-compliant-only` treat an excepted server as compliant.
+
 ## Usage
 
 ```
@@ -340,6 +363,7 @@ No AWS account is used and nothing can reach AWS.
 
 ## Changelog
 
+* **1.6.0**: compliance exceptions (`--exceptions FILE` / `compliance_exceptions.conf`, see [Compliance exceptions](#compliance-exceptions-v160)). Applied at report and merge time; `--save-data` is unchanged. Excepted servers are shown as COMPLIANT (EXCEPTION) and counted as compliant, and the evaluated status is kept. Expiring soon / no longer needed / expired flags. HTML gets an Exception column, an Exceptions quick filter and the Compliant card pop-up. CSV and JSON get 5 columns at the end. Text gets an EXCEPTIONS section. With no file the outputs are unchanged.
 * **1.5.1** - HTML: Global / Standalone checkboxes replace the Global cluster dropdown (Aurora only); Global databases card with mismatch count; collapsible global section (one line per global DB); amber global badge on mismatch; search covers global DB name, account number, engine and version, opens matching global sections, empty state. Fixes: search is trimmed and case-insensitive everywhere (incl. state restored from the page), special characters match literally, a no-match search shows "No servers match." instead of a blank page, global rows are keyed by account + name (no clash when two accounts use the same global name), and global sections a search opened collapse again when the search clears. Tests: browser_global.js (checkboxes, section, search cases, literal special characters), XSS via global name and hostile search.
 * **1.5.0** - HTML: Engine compliance table under the cards (collapsible majors, Show all majors, sortable, clickable counts, Filtered tag, sticky header); clickable, keyboard-focusable cards in a status row and a risk row with the active card highlighted; new **Flag** dropdown (Extended Support, support ending, auto minor off, pending, not returned) and **All global databases** option; per-engine pop-up on Non-compliant / Unknown; engine server sections collapsible (Expand all / Collapse all); CSV column picker remembered in localStorage; the old per engine and major version table is replaced by the engine table. Account names (config `ACCOUNTID = name` > `iam list-account-aliases` > number), `account_name` column at the end of CSV / JSON (28 CSV columns), text and merge. Mock and tests extended (browser checks, XSS via pop-up and account names).
 

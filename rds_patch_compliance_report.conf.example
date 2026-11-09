@@ -24,6 +24,9 @@ warn_days = 180             # flag majors whose standard support ends within 180
 formats = csv,html,txt
 output_dir = ~/compliance-reports
 prefix = rds_patch_compliance
+# Compliance exceptions (v1.6.0; see compliance_exceptions.conf.example). Default: compliance_exceptions.conf
+# next to the script when present, else off.
+# exceptions = ./compliance_exceptions.conf
 # top = 10   (deprecated in v1.3.1, ignored)
 tz = Asia/Kolkata
 # log_file = /home/cloudshell-user/compliance-reports/run.log
