@@ -166,7 +166,8 @@ function parseCsv(t) {
     const want = D.rows.filter(flags[k][1]).length, fl = await g.evaluate(() => document.getElementById('f-flag').value);
     ok(fl === flags[k][0] && (await vis()) === want, `${k} card sets Flag=${flags[k][0]} (${want} rows)`);
     await g.click('.card[data-k="' + k + '"]'); await sleep(20); }
-  ok(await g.evaluate(() => { const f = document.getElementById('f-flag'), t = f.parentNode; return t.lastElementChild.previousElementSibling.previousElementSibling.previousElementSibling === f; }), 'Flag dropdown at the end of the filter row (before the buttons)');
+  ok(await g.evaluate(() => { const x = document.getElementById('f-exc'), f = x || document.getElementById('f-flag'), t = f.parentNode;   // v1.6.0: Exceptions follows Flag
+    return t.lastElementChild.previousElementSibling.previousElementSibling.previousElementSibling === f && (!x || x.previousElementSibling === document.getElementById('f-flag')); }), 'Flag dropdown at the end of the filter row (before the buttons)');
   const nglob = D.rows.filter(x => x.global_cluster).length;
   await g.click('.card[data-k="global-databases"]'); await sleep(30);
   const nglobA = D.rows.filter(x => x.global_cluster && /^aurora/.test(x.engine)).length;
@@ -195,7 +196,7 @@ function parseCsv(t) {
   for (let i = 0; i < 50 && !(got = fs.readdirSync(dl).filter(f => f.endsWith('.csv'))).length; i++) await sleep(100);
   const ph = got.length ? parseCsv(fs.readFileSync(path.join(dl, got[0]), 'utf8').slice(1))[0] : [];
   ok(ph.length === D.cols.length - 2 && JSON.stringify(ph) === JSON.stringify(D.cols.filter(c => c !== 'profile' && c !== 'region')), 'picker: download without unticked columns, standard order');
-  ok(ph[ph.length - 1] === 'account_name', 'CSV: account_name is the last column');
+  ok(ph[ph.length - 1 - (D.exc ? 5 : 0)] === 'account_name', 'CSV: account_name is the last column (before the v1.6.0 exception columns)');
   await g.click('#f-csv'); await sleep(30);
   ok(await g.evaluate(() => !document.querySelector('#cpk input[value="profile"]').checked && document.querySelector('#cpk input[value="engine"]').checked), 'picker: unticked columns remembered (localStorage)');
   await g.click('#cpk [data-a="none"]'); ok(await g.evaluate(() => [...document.querySelectorAll('#cpk input')].every(b => !b.checked)), 'picker: None');

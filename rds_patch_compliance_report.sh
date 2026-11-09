@@ -17,7 +17,7 @@ set -Eeuo pipefail
 umask 077
 
 readonly SCRIPT_NAME="${0##*/}"
-readonly SCRIPT_VERSION="1.5.1"
+readonly SCRIPT_VERSION="1.6.0"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly SCRIPT_DIR
 LIB="${RDS_PCR_LIB:-$SCRIPT_DIR/lib}/compliance.jq"
@@ -73,6 +73,7 @@ TZ_SET=0
 MAX_BEHIND_SET=0
 JQ_CRLF=0
 STAMP=""
+EXC_FILE=""; EXC_JSON="null"; EXC_PATH=""   # compliance exceptions (v1.6.0): --exceptions FILE
 
 WORK=""
 AWS_CALLS=0
@@ -125,6 +126,10 @@ Compliance:
                             Default off: only the same line counts (mrp->mrp, rur->rur, plain RU->plain RU),
                             matching the RDS console Modify page. See README "Oracle versions".
       --fail-on-noncompliant  Exit 5 when any NON-COMPLIANT server is found (default: exit 0)
+      --exceptions FILE     Compliance exceptions (v1.6.0): lines "account_id | identifier | scope | expires | reason";
+                            listed servers (scope patch) show COMPLIANT (EXCEPTION) and count as compliant until the
+                            expiry date. Default: compliance_exceptions.conf next to the script, if present (none = off).
+                            Any malformed line stops the run. See compliance_exceptions.conf.example
 
 Report:
   -F, --format LIST         text,csv,json,html (default: text). Several formats need -o
@@ -230,6 +235,7 @@ load_config() {
             non_compliant_only)     if is_true "$val"; then NC_ONLY=1; else NC_ONLY=0; fi ;;
             oracle_any_patch_line)  if is_true "$val"; then ORACLE_ANY_LINE=1; else ORACLE_ANY_LINE=0; fi ;;
             fail_on_noncompliant)   if is_true "$val"; then FAIL_ON_NC=1; else FAIL_ON_NC=0; fi ;;
+            exceptions)             EXC_FILE="${val/#\~/$HOME}" ;;
             log_file)               LOG_FILE="${val/#\~/$HOME}" ;;
             aws_timeout)            AWS_TIMEOUT="$val" ;;
             max_attempts)           MAX_ATTEMPTS="$val" ;;
@@ -286,6 +292,7 @@ parse_args() {
             --non-compliant-only) NC_ONLY=1; shift ;;
             --oracle-any-patch-line) ORACLE_ANY_LINE=1; shift ;;
             --fail-on-noncompliant) FAIL_ON_NC=1; shift ;;
+            --exceptions)       need_arg "$opt" $#; EXC_FILE="$2"; shift 2 ;;
             -l|--log-file)      need_arg "$opt" $#; LOG_FILE="$2"; shift 2 ;;
             --config)           shift 2 ;;
             --aws-timeout)      need_arg "$opt" $#; AWS_TIMEOUT="$2"; shift 2 ;;
@@ -357,6 +364,9 @@ validate() {
     for x in "${ALERT_WEBHOOKS[@]}"; do [[ "$x" =~ ^https?:// ]] || die 1 "--alert-webhook must be an http(s) URL: $(redact_url "$x")"; done
     if [[ -n "$LOG_FILE" && "$DRY_RUN" -eq 0 ]]; then touch -- "$LOG_FILE" 2>/dev/null || die 1 "Cannot write log file: $LOG_FILE"; fi
     (( MERGE )) || (( ${#PROFILES[@]} )) || PROFILES=("")
+    load_exceptions   # before any AWS call: a bad line stops the run now, not after the scan
+    [[ "$EXC_JSON" != null ]] && log_info "Exceptions file $EXC_PATH: $(jq -r 'length' <<<"$EXC_JSON" | tr -d '\r') entries"
+    return 0
 }
 
 filters_json() {
@@ -373,6 +383,56 @@ filters_text() {
     echo "$out"
 }
 
+# ---------------------------------------------------------------------------- compliance exceptions (shared by
+# rds-patch-compliance, rds-backup-compliance and rds-compliance-report; same file format in all three)
+# compliance_exceptions.conf, one entry per line:  account_id | identifier | scope | expires | reason
+#   all five required; scope patch, backup or patch,backup; expires YYYY-MM-DD (UTC, last valid day); # comments
+# Strict: any bad line stops the run (exit 1) naming file:line. Applied at report time only (saved data is unchanged).
+exc_trim() { local -n _v="$1"; _v="${_v#"${_v%%[![:space:]]*}"}"; _v="${_v%"${_v##*[![:space:]]}"}"; }
+load_exceptions() {   # -> EXC_JSON: "null" (feature off: no file) or a JSON array of entries; EXC_PATH = the file used
+    local f="$EXC_FILE" line n=0 acct id scope exp reason s y m d dim k tsv=""
+    local -a sc=()
+    local -A seen=()
+    if [[ -z "$f" ]]; then f="$SCRIPT_DIR/compliance_exceptions.conf"; [[ -f "$f" ]] || return 0; fi
+    [[ -f "$f" && -r "$f" ]] || die 1 "Exceptions file not readable: $f"
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        n=$((n + 1)); line="${line%$'\r'}"
+        [[ "$line" =~ ^[[:space:]]*(#|$) ]] && continue
+        [[ "$line" == *'|'*'|'*'|'*'|'* ]] || die 1 "Exceptions $f:$n: expected 5 fields 'account_id | identifier | scope | expires | reason'"
+        IFS='|' read -r acct id scope exp reason <<<"$line"
+        exc_trim acct; exc_trim id; exc_trim scope; exc_trim exp; reason="${reason//[$'\001'-$'\037']/ }"; exc_trim reason
+        [[ -n "$acct" && -n "$id" && -n "$scope" && -n "$exp" && -n "$reason" ]] \
+            || die 1 "Exceptions $f:$n: missing field (all of account_id, identifier, scope, expires, reason are required)"
+        [[ "$acct" =~ ^[0-9]{12}$ ]] || die 1 "Exceptions $f:$n: account_id must be 12 digits (got '$acct')"
+        [[ "$id" =~ ^[A-Za-z][A-Za-z0-9-]{0,62}$ ]] \
+            || die 1 "Exceptions $f:$n: identifier '$id' is not a DB instance / cluster identifier (letters, digits, hyphens; no wildcards)"
+        scope="${scope,,}"; scope="${scope//[[:space:]]/}"; IFS=',' read -r -a sc <<<"$scope"
+        (( ${#sc[@]} )) || die 1 "Exceptions $f:$n: scope must be patch, backup or patch,backup"
+        k=""; for s in "${sc[@]}"; do
+            [[ "$s" == patch || "$s" == backup ]] || die 1 "Exceptions $f:$n: scope must be patch, backup or patch,backup (got '$scope')"
+            [[ ",$k," == *",$s,"* ]] && die 1 "Exceptions $f:$n: scope lists '$s' twice"
+            k+="${k:+,}$s"
+        done
+        scope="$k"
+        [[ "$exp" =~ ^([0-9]{4})-([0-9]{2})-([0-9]{2})$ ]] || die 1 "Exceptions $f:$n: expires must be a date YYYY-MM-DD (got '$exp'); an expiry date is mandatory"
+        y=$((10#${BASH_REMATCH[1]})); m=$((10#${BASH_REMATCH[2]})); d=$((10#${BASH_REMATCH[3]}))
+        case "$m" in 1|3|5|7|8|10|12) dim=31 ;; 4|6|9|11) dim=30 ;;
+            2) if (( (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 )); then dim=29; else dim=28; fi ;; *) dim=0 ;; esac
+        (( m >= 1 && m <= 12 && d >= 1 && d <= dim && y >= 2000 )) || die 1 "Exceptions $f:$n: expires '$exp' is not a valid date"
+        for s in "${sc[@]}"; do
+            k="$acct|${id,,}|$s"
+            [[ -n "${seen[$k]:-}" ]] && die 1 "Exceptions $f:$n: duplicate entry for $acct $id ($s), already on line ${seen[$k]}"
+            seen[$k]=$n
+        done
+        tsv+="$n"$'\t'"$acct"$'\t'"$id"$'\t'"$scope"$'\t'"$exp"$'\t'"$reason"$'\n'
+    done <"$f"
+    EXC_PATH="$f"
+    EXC_JSON="$(printf '%s' "$tsv" | jq -Rcs 'split("\n") | map(select(. != "") | split("\t")
+        | {line: (.[0] | tonumber), account: .[1], identifier: .[2], scopes: (.[3] | split(",")), expires: .[4], reason: (.[5:] | join(" "))})' | tr -d '\r')" \
+        || die 1 "Exceptions $f: cannot convert the entries (jq)"
+    return 0
+}
+
 # compliance.jq needs every $variable defined in every mode
 rjq() {   # rjq <mode> [extra jq args...]
     local mode="$1"; shift
@@ -380,7 +440,20 @@ rjq() {   # rjq <mode> [extra jq args...]
         --argjson top_n "$TOP_N" --argjson nc_only "$( (( NC_ONLY )) && echo true || echo false)" \
         --argjson oracle_any "$( (( ORACLE_ANY_LINE )) && echo true || echo false)" \
         --argjson tagcols "$(json_array "${TAG_COLUMNS[@]}")" --argjson f "$FILTERS_JSON" \
-        --argjson acct_names "$(account_names_json)" "${PAGE_ARGS[@]}" -f "$LIB" "$@"
+        --argjson acct_names "$(account_names_json)" "${PAGE_ARGS[@]}" "${EXC_ARGS[@]}" -f "$LIB" "$@"
+}
+EXC_ARGS=()
+exc_ready() {   # write the validated entries next to the work files once; jq reads them as $ARGS.named.exc
+    [[ "$EXC_JSON" != null && -n "$WORK" ]] || return 0
+    printf '%s' "$EXC_JSON" >"$WORK/exceptions.json"; EXC_ARGS=(--slurpfile exc "$WORK/exceptions.json")
+}
+exc_log() {   # exc_log <report.json>: one summary line + a warning per entry that matched no server / has expired
+    [[ "$EXC_JSON" != null ]] || return 0
+    local l
+    while IFS= read -r l; do [[ -n "$l" ]] && log_warn "$l"; done < <(jq -r --arg f "${EXC_PATH##*/}" '.summary.exceptions as $e
+        | ($e.unmatched[] | "Exception \($f):\(.line) (\(.account) \(.identifier)) matched no server in this report"),
+          (.rows[] | select(.exception == "expired") | "Exception for \(.account_id) \(.identifier) expired on \(.exception_expires): evaluated normally (\(.compliance_status))")' "$1" | tr -d '\r')
+    log_info "$(jq -r '.summary.exceptions as $e | "Exceptions (patch): \($e.applied) applied (counted as COMPLIANT), \($e.attention) expiring soon or no longer needed, \($e.expired) expired, \($e.unmatched | length) unmatched"' "$1" | tr -d '\r')"
 }
 PAGE_ARGS=()
 account_names_json() {   # config names as a JSON object (they win over IAM aliases and saved names)
@@ -712,7 +785,9 @@ build_report() {
     REPORT="$WORK/report.json"
     jq -n --slurpfile meta "$WORK/meta.json" --slurpfile rows "$WORK/all_rows.json" --slurpfile errors "$WORK/all_errors.json" \
         '{meta: $meta[0], rows: $rows[0], errors: $errors[0]}' >"$WORK/raw_report.json" || die 4 "Assembling the report failed"
+    exc_ready
     rjq finalize "$WORK/raw_report.json" >"$REPORT" || die 4 "Finalizing the report failed"
+    exc_log "$REPORT"
 }
 
 render() {   # render <format>  -> stdout
@@ -987,7 +1062,9 @@ merge_main() {
          rows: .rows, errors: .errors}' "$WORK/merged.json" | tr -d '\r' >"$WORK/raw_report.json" || die 4 "Assembling the merged report failed"
     # identifier / engine filters (-e / -i) apply to merged rows too
     REPORT="$WORK/report.json"
+    exc_ready
     rjq finalize "$WORK/raw_report.json" | tr -d '\r' >"$REPORT" || die 4 "Finalizing the merged report failed"
+    exc_log "$REPORT"
     write_outputs
     local rc=0 nc; nc="$(jq -r '.summary.non_compliant' "$REPORT" | tr -d '\r')"
     (( FAIL_ON_NC && nc > 0 )) && rc=5

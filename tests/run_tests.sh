@@ -118,7 +118,7 @@ vce oracle-ee "${O}2026-10.mrp-2026-10.r1" 1 "${O}2026-07.mrp-2026-07.r10"
 
 echo "== usage / validation"
 t help 0 fleet --help;               has help out 'Exit codes'; has help out 'read-only'; has help out '--max-behind'; has help out 'describe-global-clusters'
-t version 0 fleet --version;         has version out '1\.5\.1'
+t version 0 fleet --version;         has version out '1\.6\.0'
 t badopt 1 fleet --bogus
 t badfmt 1 fleet -r us-east-1 -F xml
 t multinoout 1 fleet -r us-east-1 -F csv,html
@@ -630,6 +630,88 @@ if command -v node >/dev/null 2>&1 && [[ -x "${CHROME:-/usr/bin/google-chrome}" 
     res="$(node "$HERE/browser_check.js" "$(ls "$AN"/c/*.html)" 2>&1)"; rc=$?
     chk "browser: named accounts report ${res:0:300}" test "$rc" -eq 0
 fi
+
+echo "== v1.6.0: compliance exceptions (--exceptions FILE / compliance_exceptions.conf)"
+EX="$OUT/exc"; mkdir -p "$EX"
+# mg clock 1791000000 = 2026-10-03 (UTC): expiring soon = within 14 days, expires = last valid day
+cat >"$EX/ok.conf" <<'CONF'
+# account_id | identifier | scope | expires | reason
+111111111111 | legacy-aurora-pg12 | patch        | 2026-12-31 | Decommission Dec 2026 (CHG-1)
+111111111111 | inv-mysql          | patch,backup | 2026-10-10 | Vendor app pinned | owner: dba
+111111111111 | billing-pg         | patch        | 2027-03-01 | Freeze <b>q1</b>
+111111111111 | hr-sql             | patch        | 2026-10-02 | Old waiver
+  111111111111|old-aurora-pg11|PATCH|2026-10-03|=Ends today
+
+111111111111 | ghost-db           | patch        | 2027-01-01 | Not there
+111111111111 | analytics-pg       | backup       | 2027-01-01 | Backup only (not applied by the patch tool)
+CONF
+mg exc_base 0 --merge "$SD1" -F json -o "$EX/base"
+mg exc_on 0 --merge "$SD1" --exceptions "$EX/ok.conf" -F json,csv,text,html -o "$EX/on"
+EJ="$(ls "$EX"/on/*.json)"; BJ="$(ls "$EX"/base/*.json)"
+chk "exc: base fixture 19 = 11 compliant + 7 non-compliant + 1 unknown" jq -e '.summary | .total == 19 and .compliant == 11 and .non_compliant == 7 and .unknown == 1' "$BJ"
+chk "exc: counts -> compliant 14 (incl. 4), non-compliant 5, unknown 0, 73.7%" jq -e '.summary | .compliant == 14 and .non_compliant == 5 and .unknown == 0 and .pct_compliant == 73.7 and .exceptions.applied == 4' "$EJ"
+chk "exc: actual status kept" jq -e '[.rows[] | select(.exception == "yes") | [.identifier, .compliance_status, .actual_status]] | sort == [["billing-pg","COMPLIANT","COMPLIANT"],["inv-mysql","COMPLIANT","NON-COMPLIANT"],["legacy-aurora-pg12","COMPLIANT","NON-COMPLIANT"],["old-aurora-pg11","COMPLIANT","UNKNOWN"]]' "$EJ"
+chk "exc: flags (expiring soon incl. expires today, no longer needed)" jq -e '([.rows[] | select(.exception != "no") | {(.identifier): .exception_flag}] | add) == {"legacy-aurora-pg12": "", "inv-mysql": "expiring soon", "billing-pg": "no longer needed", "hr-sql": "exception expired", "old-aurora-pg11": "expiring soon"}' "$EJ"
+chk "exc: expired entry evaluated normally" jq -e '.rows[] | select(.identifier == "hr-sql") | .exception == "expired" and .compliance_status == "NON-COMPLIANT"' "$EJ"
+chk "exc: summary attention 3, expired 1, unmatched ghost-db line 8, backup-only entry not counted" jq -e '.summary.exceptions | .attention == 3 and .expiring_soon == 2 and .no_longer_needed == 1 and .expired == 1 and .unmatched == [{line: 8, account: "111111111111", identifier: "ghost-db"}] and .entries == 6' "$EJ"
+chk "exc: other rows unchanged vs no-file run" bash -c "diff <(jq -S '[.rows[] | select(.exception == \"no\") | del(.exception, .exception_reason, .exception_expires, .exception_flag, .actual_status)]' '$EJ') <(jq -S --argjson x '[\"legacy-aurora-pg12\",\"inv-mysql\",\"billing-pg\",\"hr-sql\",\"old-aurora-pg11\"]' '[.rows[] | select(.identifier as \$i | \$x | index([\$i]) | not)]' '$BJ')"
+chk "exc: no-file JSON has no exception fields" jq -e '(.summary | has("exceptions") | not) and all(.rows[]; has("exception") | not)' "$BJ"
+has exc_on err 'ok\.conf:8 \(111111111111 ghost-db\) matched no server'
+has exc_on err 'hr-sql expired on 2026-10-02'
+has exc_on err 'Exceptions \(patch\): 4 applied'
+EC="$(ls "$EX"/on/rds_patch_compliance_*[0-9].csv)"
+chk "exc csv: 5 new columns at the end" bash -c "head -1 '$EC' | grep -q ',\"account_name\",\"exception\",\"exception_reason\",\"exception_expires\",\"exception_flag\",\"actual_status\"\$'"
+chk "exc csv: status COMPLIANT (EXCEPTION) on 4 rows" test "$(grep -c '"COMPLIANT (EXCEPTION)"' "$EC")" -eq 4
+chk "exc csv: expired row" grep -q '"expired","Old waiver","2026-10-02","exception expired","NON-COMPLIANT"$' "$EC"
+chk "exc csv: reason formula guard" grep -q "\"'=Ends today\"" "$EC"
+ET="$(ls "$EX"/on/*.txt)"
+chk "exc text: summary + EXCEPTIONS section" bash -c "grep -q 'COMPLIANT 14 (incl. 4 exceptions)' '$ET' && grep -q '^EXCEPTIONS' '$ET' && grep -q 'line 8: 111111111111 ghost-db matched no server' '$ET' && grep -q '^  COMPLIANT\*' '$ET'"
+EH="$(ls "$EX"/on/*.html)"
+chk "exc html: Exception column, badge, quick filter, escaped reason" bash -c "grep -q '<th>Exception</th>' '$EH' && grep -q 'COMPLIANT (EXCEPTION)' '$EH' && grep -q 'id=\"f-exc\"' '$EH' && grep -q 'Freeze &lt;b&gt;q1&lt;/b&gt;' '$EH' && ! grep -q 'Freeze <b>' '$EH'"
+mg exc_nc 0 --merge "$SD1" --exceptions "$EX/ok.conf" -F json --non-compliant-only -o "$EX/nc"
+chk "exc: --non-compliant-only hides excepted servers" jq -e '[.rows[].identifier] | (index("legacy-aurora-pg12") == null) and (index("hr-sql") != null) and length == 5' "$EX"/nc/*.json
+jq -r '.rows[] | select(.compliance_status == "NON-COMPLIANT") | "\(.account_id) | \(.identifier) | patch | 2027-01-01 | all non-compliant"' "$BJ" >"$EX/all.conf"
+mg exc_fail 0 --merge "$SD1" --exceptions "$EX/all.conf" -F json --fail-on-noncompliant -o "$EX/fail"
+chk "exc: every non-compliant excepted -> --fail-on-noncompliant exits 0" jq -e '.summary.non_compliant == 0 and .summary.exceptions.applied == 7' "$EX"/fail/*.json
+mg exc_fail5 5 --merge "$SD1" --exceptions "$EX/ok.conf" -F json --fail-on-noncompliant -o "$EX/fail5"
+# validation: every bad line stops the run with file:line, before any AWS call
+xbad() { local name="$1" want="$2" line="$3"; printf '# header\n111111111111 | good-db | patch | 2027-01-01 | ok\n%s\n' "$line" >"$EX/$name.conf"
+         : >"$MOCK_LOG"; t "$name" 1 fleet -P prod -r us-east-1 --exceptions "$EX/$name.conf"
+         has "$name" err "Exceptions .*$name\\.conf:3: .*$want"; chk "$name: no AWS call made" test ! -s "$MOCK_LOG"; }
+xbad exc_missing 'missing field' '111111111111 | db1 | patch | 2027-01-01 |   '
+xbad exc_fields 'expected 5 fields' '111111111111 | db1 | patch | 2027-01-01'
+xbad exc_acct 'account_id must be 12 digits' '11111111111 | db1 | patch | 2027-01-01 | r'
+xbad exc_scope 'scope must be patch, backup or patch,backup' '111111111111 | db1 | patches | 2027-01-01 | r'
+xbad exc_scope2 "scope lists 'patch' twice" '111111111111 | db1 | patch,patch | 2027-01-01 | r'
+xbad exc_date 'is not a valid date' '111111111111 | db1 | patch | 2026-02-29 | r'
+xbad exc_date2 'expires must be a date YYYY-MM-DD' '111111111111 | db1 | patch | never | r'
+xbad exc_date3 'expires must be a date YYYY-MM-DD' '111111111111 | db1 | patch | 2027/01/01 | r'
+xbad exc_glob 'is not a DB instance / cluster identifier' '111111111111 | prod-* | patch | 2027-01-01 | r'
+xbad exc_dup 'duplicate entry for 111111111111 Good-DB \(patch\), already on line 2' '111111111111 | Good-DB | patch,backup | 2027-01-01 | r'
+printf '111111111111 | db1 | patch | 2028-02-29 | leap day ok\n111111111111 | db1 | backup | 2027-01-01 | other scope, not a duplicate\n' >"$EX/nodup.conf"
+t exc_nodup 0 fleet -P prod -r us-east-1 -F json --exceptions "$EX/nodup.conf"
+t exc_nofile 1 fleet -P prod -r us-east-1 --exceptions "$EX/does-not-exist.conf"; has exc_nofile err 'Exceptions file not readable'
+# default: compliance_exceptions.conf next to the script (a copy of the tool), absent = off; config key exceptions =
+TC="$OUT/toolcopy"; mkdir -p "$TC"; cp -r "$HERE/../rds_patch_compliance_report.sh" "$HERE/../lib" "$TC/"
+PATH="$NOAWS:$PATH" RDS_PCR_NOW=1791000000 "$TC/rds_patch_compliance_report.sh" --merge "$SD1" -F json -o "$EX/def0" 2>"$EX/def0.err"
+chk "exc default: no file next to the script -> off" jq -e '.summary | has("exceptions") | not' "$EX"/def0/*.json
+cp "$EX/ok.conf" "$TC/compliance_exceptions.conf"
+PATH="$NOAWS:$PATH" RDS_PCR_NOW=1791000000 "$TC/rds_patch_compliance_report.sh" --merge "$SD1" -F json -o "$EX/def1" 2>"$EX/def1.err"
+chk "exc default: compliance_exceptions.conf next to the script is used" jq -e '.summary.exceptions.applied == 4' "$EX"/def1/*.json
+printf 'exceptions = %s\n' "$EX/all.conf" >"$EX/c.conf"
+mg exc_conf 0 --config "$EX/c.conf" --merge "$SD1" -F json -o "$EX/conf"
+chk "exc: config key exceptions = FILE" jq -e '.summary.non_compliant == 0 and .summary.exceptions.applied == 7' "$EX"/conf/*.json
+# collection: the report gets the exceptions, the --save-data file does not change
+RDS_PCR_NOW=1790000000 t exc_sd 0 fleet -P prod -r us-east-1,ap-south-1 -F json -o "$EX/sd" --save-data --exceptions "$EX/ok.conf"
+chk "exc: --save-data file identical with and without exceptions" bash -c "diff <(jq -S . '$SD1') <(jq -S . '$EX/sd/rds_patch_111111111111_20260921.json')"
+chk "exc: direct (collection) report applies exceptions" jq -e '.summary.exceptions.applied >= 3' "$(ls "$EX"/sd/rds_patch_compliance_*.json)"
+if command -v node >/dev/null 2>&1 && [[ -x "${CHROME:-/usr/bin/google-chrome}" ]] && NODE_PATH="${NODE_PATH:-}" node -e 'require("puppeteer-core")' 2>/dev/null; then
+    mg exc_nohtml 0 --merge "$SD1" -o "$EX/noexc.html"
+    res="$(node "$HERE/browser_exceptions.js" "$EH" "$EX/noexc.html" ${SHOTS:+"$SHOTS"} 2>&1)"; rc=$?
+    chk "browser: exception column, quick filter with other filters, pop-up, CSV ($(jq -r '.checks' <<<"$res" 2>/dev/null) checks) ${res:0:400}" test "$rc" -eq 0
+    res="$(node "$HERE/browser_check.js" "$EH" 2>&1)"; rc=$?
+    chk "browser: existing checks still pass on a report with exceptions ${res:0:300}" test "$rc" -eq 0
+else echo "  skip exceptions browser check (node + puppeteer-core on NODE_PATH + Chrome not found)"; fi
 
 echo "== hygiene"
 chk "shellcheck script" shellcheck "$SCRIPT"
