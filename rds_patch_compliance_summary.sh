@@ -11,6 +11,9 @@
 #
 # Exit codes: 0 ok, 1 usage, 2 pre-check / collection failed, 3 bad --merge input file, 4 output error, 5 NON-COMPLIANT found with
 #             --fail-on-noncompliant, 130 interrupted.
+# ----------------------------------------------------------------------------
+# Settings: strict mode, version, paths (the full report script does the scan)
+# ----------------------------------------------------------------------------
 set -Eeuo pipefail
 umask 077
 
@@ -26,6 +29,9 @@ if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 4) ))
     echo "$SCRIPT_NAME: bash 4.4+ required (found $BASH_VERSION)" >&2; exit 2
 fi
 
+# ----------------------------------------------------------------------------
+# Defaults
+# ----------------------------------------------------------------------------
 PROFILES=(); REGIONS=(); ALL_REGIONS=0; NO_DISCOVER=0; PROBE_PARALLEL=""; ENGINES=(); IDENTIFIERS=()
 FORMATS=(); OUTPUT_DIR=""; PREFIX="rds_patch_compliance_summary"
 MAX_BEHIND=2; MAX_BEHIND_SET=0; WARN_DAYS=180; SAVE_DATA=0; SAVE_DATA_FILE=""; MERGE=0; MERGE_ARGS=(); ORACLE_ANY_LINE=0; FAIL_ON_NC=0; VERBOSE=0
@@ -33,11 +39,19 @@ ALERT_EMAILS=(); ALERT_WEBHOOKS=(); ALERT_ON="noncompliant"; ALERT_WEBHOOK_FORMA
 readonly SLACK_MAX_CHARS=35000
 WORK=""; WRITTEN=()
 
+# ----------------------------------------------------------------------------
+# Logging and small helpers
+# ----------------------------------------------------------------------------
+# _log LEVEL MESSAGE...: timestamped line to stderr.
 _log() { printf '%s [%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1" "${*:2}" >&2; }
+# Level wrappers.
 log_info() { _log INFO "$@"; }
 log_warn() { _log WARN "$@"; }
+# die CODE MESSAGE...: log an ERROR line and exit with CODE.
 die() { local code="$1"; shift; _log ERROR "$@"; exit "$code"; }
+# need_arg OPTION REMAINING_ARGC: exit 1 when an option that needs a value is the last argument.
 need_arg() { [[ "$2" -ge 2 ]] || die 1 "Option $1 requires a value (see --help)"; }
+# add_list ARRAY_NAME 'a, b,c': split on commas, trim spaces, append the non-empty items.
 add_list() {
     local -n _arr="$1"; local _item; local -a _parts
     IFS=',' read -r -a _parts <<<"$2"
@@ -47,8 +61,13 @@ add_list() {
     done
     return 0
 }
+# redact_url URL: keep only scheme://host, so a webhook token never reaches the log.
 redact_url() { if [[ "$1" =~ ^([a-zA-Z]+://[^/]+) ]]; then printf '%s/...' "${BASH_REMATCH[1]}"; else printf '<webhook>'; fi; }
 
+# ----------------------------------------------------------------------------
+# Usage
+# ----------------------------------------------------------------------------
+# usage: print the --help text.
 usage() {
     cat <<USAGE
 $SCRIPT_NAME $SCRIPT_VERSION - RDS patch compliance SUMMARY (read-only)
@@ -90,6 +109,10 @@ Needs: aws CLI v2 (not for --merge), jq 1.6+, and rds_patch_compliance_report.sh
 USAGE
 }
 
+# ----------------------------------------------------------------------------
+# Argument parsing
+# ----------------------------------------------------------------------------
+# parse_args "$@": set the globals from the options (list options are repeatable and append).
 parse_args() {
     local opt
     while (( $# )); do
@@ -125,6 +148,10 @@ parse_args() {
     done
 }
 
+# ----------------------------------------------------------------------------
+# Validation
+# ----------------------------------------------------------------------------
+# validate: check the options, formats and alert settings, and that the full report script and lib files exist.
 validate() {
     local f x
     (( ${#FORMATS[@]} )) || FORMATS=(txt)
@@ -160,6 +187,10 @@ validate() {
     [[ -r "$LIB" && -r "$SCRIPT_DIR/lib/versions.jq" ]] || die 2 "lib/summary.jq or lib/versions.jq missing next to $SCRIPT_NAME"
 }
 
+# ----------------------------------------------------------------------------
+# Collection (delegated to rds_patch_compliance_report.sh -F json)
+# ----------------------------------------------------------------------------
+# collect: run the full report (scan, or --merge offline) and keep its finalized JSON in $REPORT.
 # the full report does the read-only scan; its JSON is the single source of the numbers
 collect() {
     local -a a=(-F json --warn-days "$WARN_DAYS")
@@ -197,13 +228,25 @@ collect() {
     jq -e '.summary.total != null' "$REPORT" >/dev/null 2>&1 || die 2 "Scan returned no report"
 }
 
+# ----------------------------------------------------------------------------
+# jq helpers and rendering
+# ----------------------------------------------------------------------------
 # jq.exe (Git Bash on Windows) writes CRLF: every jq output used here is made LF-only
 JQ_CRLF=0
+# detect_jq_eol: set JQ_CRLF=1 when this jq writes CRLF line ends.
 detect_jq_eol() { if [[ "$(jq -jn '"x\n"' | wc -c | tr -d ' \r')" != 2 ]]; then JQ_CRLF=1; fi; }
+# unix_eol: stdin filter; strips CR when JQ_CRLF=1.
 unix_eol() { if (( JQ_CRLF )); then tr -d '\r'; else cat; fi; }
+# jqr ARGS...: jq with LF-only output.
 jqr() { jq "$@" | unix_eol; }
+# render MODE: render $REPORT with lib/summary.jq (text, html, csv_nc, csv_summary, csv_accounts, csv_regions, alert).
 render() { jqr -r --arg mode "$1" --arg version "$SCRIPT_VERSION" -f "$LIB" "$REPORT"; }
 
+# ----------------------------------------------------------------------------
+# Outputs
+# ----------------------------------------------------------------------------
+# write_outputs: text to stdout without -o; else one file per format (csv = summary, non-compliant, accounts,
+# regions files), with the account number in the names when one account was scanned.
 write_outputs() {
     local f stamp file acct
     if [[ -z "$OUTPUT_DIR" ]]; then render text || die 4 "Rendering failed"; return 0; fi
@@ -231,6 +274,10 @@ write_outputs() {
     case " ${FORMATS[*]} " in *" txt "*|*" text "*) render text ;; esac
 }
 
+# ----------------------------------------------------------------------------
+# Alerts (optional)
+# ----------------------------------------------------------------------------
+# send_email_alert: send the text body with mail / mailx, else sendmail (60 s timeout when available).
 send_email_alert() {   # <subject> <body-file>
     local subject="$1" bodyfile="$2" mailer="" to
     local -a tmo=(); command -v timeout >/dev/null 2>&1 && tmo=(timeout 60)
@@ -248,6 +295,7 @@ send_email_alert() {   # <subject> <body-file>
           printf 'To: %s\nSubject: %s\nContent-Type: text/plain; charset=UTF-8\n\n' "$to" "$subject"; cat -- "$bodyfile"; } | "${tmo[@]}" "$mailer" -t -oi
     fi
 }
+# send_webhook_alert: POST the JSON payload with curl; the URL is passed on stdin (-K -), so it never shows in ps.
 send_webhook_alert() {   # <url> <payload-file>
     local url="$1" payload="$2" out
     command -v curl >/dev/null 2>&1 || { log_warn "Alert: curl not installed; webhook skipped"; return 1; }
@@ -256,6 +304,8 @@ send_webhook_alert() {   # <url> <payload-file>
         || { log_warn "Alert: webhook $(redact_url "$url") failed: ${out%%$'\n'*}"; return 1; }
     log_info "Alert: webhook $(redact_url "$url") -> HTTP $out"
 }
+# send_alerts: send the summary to every e-mail / webhook; with --alert-on noncompliant only when NON-COMPLIANT
+# servers or AWS errors were found.
 send_alerts() {
     (( ${#ALERT_EMAILS[@]} + ${#ALERT_WEBHOOKS[@]} )) || return 0
     local body="$WORK/alert_body.txt" payload="$WORK/alert_payload.json" status subject url
@@ -278,11 +328,21 @@ send_alerts() {
     return 0
 }
 
+# ----------------------------------------------------------------------------
+# Exit and signal traps
+# ----------------------------------------------------------------------------
+# on_exit (EXIT trap): remove the work dir and keep the exit code.
 # shellcheck disable=SC2317,SC2329  # invoked via trap
 on_exit() { local rc=$?; trap - EXIT INT TERM; [[ -n "$WORK" && -d "$WORK" ]] && rm -rf -- "$WORK"; exit "$rc"; }
+# on_signal (INT / TERM trap): log and exit 130.
 # shellcheck disable=SC2317,SC2329
 on_signal() { _log ERROR "Interrupted"; exit 130; }
 
+# ----------------------------------------------------------------------------
+# main
+# ----------------------------------------------------------------------------
+# main: parse + validate, collect via the full report, write outputs, set exit 5 with --fail-on-noncompliant
+# when NON-COMPLIANT servers exist, then send alerts.
 main() {
     trap on_exit EXIT
     trap on_signal INT TERM

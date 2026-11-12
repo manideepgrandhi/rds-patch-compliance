@@ -4,13 +4,21 @@ include "versions" {search: "./"};   # lib/versions.jq: version parsing + minor 
 # Every mode gets: $now (epoch), $max_behind, $warn_days, $top_n, $tagcols, $f (filters), $nc_only; optional --argjson oracle_any (default false)
 
 # ------------------------------------------------------------------ helpers
+# h: HTML-escape any value.
 def h: tostring | @html;
+# alab: account label, "name (number)" or "number (profile)".
 def alab: if (.name // "") != "" then "\(.name) (\(.account))" else "\(.account) (\(.profile))" end;   # v1.5.0 "name (number)"
+# dash: "-" for null / empty, else the value as text.
 def dash: if . == null or . == "" then "-" else tostring end;
+# glob2re: shell glob (* ?) -> anchored regex, other regex characters escaped.
 def glob2re: "^" + (gsub("(?<c>[.+^$(){}|\\[\\]\\\\])"; "\\\(.c)") | gsub("\\*"; ".*") | gsub("\\?"; ".")) + "$";
+# gmatch($globs): true when the input matches any glob (case-insensitive); an empty list matches everything.
 def gmatch($globs): . as $v | ($globs | length) == 0 or any($globs[]; . as $g | ($v // "") | test($g | glob2re; "i"));
+# sq: shell-quote a value only when it needs quoting.
 def sq: tostring | if test("^[A-Za-z0-9_./:=@,+%-]+$") then . else "'" + gsub("'"; "'\\''") + "'" end;
+# day: first 10 characters (YYYY-MM-DD) of a date string, null when empty.
 def day: if . == null or . == "" then null else (tostring | .[0:10]) end;
+# epoch_of_day: YYYY-MM-DD -> epoch seconds at 00:00 UTC.
 def epoch_of_day: if . == null then null else (. + "T00:00:00Z" | fromdateiso8601) end;
 
 # ------------------------------------------------------------------ version compare
@@ -20,6 +28,7 @@ def epoch_of_day: if . == null then null else (. + "T00:00:00Z" | fromdateiso860
 # Aurora MySQL "8.0.mysql_aurora.3.05.2" shares the "8.0.mysql_aurora." prefix inside one major line, so the
 # Aurora release (3.05.2) decides.
 # vkey lives in lib/versions.jq; Oracle patch lines are parsed there (ora_parse) and compared numerically.
+# vcmp($a; $b): -1 / 0 / 1 by vkey (used by the vkey_cmp test mode).
 def vcmp($a; $b): ($a | vkey) as $x | ($b | vkey) as $y | if $x < $y then -1 elif $x > $y then 1 else 0 end;
 # major line when AWS no longer lists the version (deprecated): same rule AWS uses for MajorEngineVersion
 def derive_major($engine):
@@ -29,23 +38,32 @@ def derive_major($engine):
     else ($k[0] + "." + ($k[1] // "0")) end;
 
 # ------------------------------------------------------------------ maintenance window UTC -> IST
+# dayn / dname: weekday name <-> number (sun = 0).
 def dayn: {"sun":0,"mon":1,"tue":2,"wed":3,"thu":4,"fri":5,"sat":6}[ascii_downcase];
 def dname: ["sun","mon","tue","wed","thu","fri","sat"][.];
+# two: zero-pad to 2 digits.
 def two: tostring | if length < 2 then "0" + . else . end;
+# shift_win($mins): move a maintenance window "ddd:hh:mm-ddd:hh:mm" by $mins minutes, wrapping around the week
+# (10080 minutes). Used with 330 for UTC -> IST.
 def shift_win($mins):
   if . == null or . == "" then "" else
   split("-") | map(split(":") | ((.[0] | dayn) * 1440 + (.[1] | tonumber) * 60 + (.[2] | tonumber) + $mins) % 10080
                    | "\((. / 1440 | floor) | dname):\(((. % 1440) / 60 | floor) | two):\((. % 60) | two)") | join("-") end;
 
 # ------------------------------------------------------------------ rows (per profile / region)
+# svc_of: engine -> AWS CLI service (docdb, neptune, else rds).
 def svc_of: if . == "docdb" then "docdb" elif . == "neptune" then "neptune" else "rds" end;
+# in_scope: true for the engines this report covers.
 def in_scope: test("^(aurora-postgresql|aurora-mysql|postgres|mysql|mariadb|sqlserver-(ee|se|ex|web)|oracle-(ee|se2|ee-cdb|se2-cdb)|docdb|neptune)$");
+# tags_obj: TagList [{Key, Value}] -> {key: value}.
 def tags_obj: [(.TagList // [])[] | {key: .Key, value: .Value}] | from_entries;
 
 # one pending maintenance action -> structured + readable ("on" = "cluster", "member <id>" or "" for an instance)
+# utc_day / ist_of / utc_of: an AWS timestamp as YYYY-MM-DD, "YYYY-MM-DD HH:MM IST" (+5:30) or "YYYY-MM-DD HH:MM UTC".
 def utc_day: if . == null or . == "" then null else tostring | .[0:10] end;
 def ist_of: if . == null or . == "" then null else (tostring | .[0:19] + "Z" | fromdateiso8601 + 19800 | strftime("%Y-%m-%d %H:%M IST")) end;
 def utc_of: if . == null or . == "" then null else (tostring | .[0:16] | sub("T"; " ")) + " UTC" end;
+# pend_item($on): one PendingMaintenanceActionDetails entry -> structured fields + a one-line text.
 def pend_item($on):
   { action: .Action, on: $on, description: (.Description // ""), opt_in_status: (.OptInStatus // ""),
     auto_applied_after: (.AutoAppliedAfterDate | utc_day), forced_apply: (.ForcedApplyDate | utc_day), current_apply: (.CurrentApplyDate | utc_day),
@@ -57,6 +75,9 @@ def pend_item($on):
                       (if .opt_in_status != "" then "opt-in: \(.opt_in_status)" else empty end) ] | if length == 0 then "no date, optional" else join(", ") end) + ")"
           + (if .description != "" then " - " + (.description | if length > 60 then .[0:57] + "..." else . end) else "" end))};
 
+# rows (mode rows): one region's describe output ($ARGS.named clusters, instances, pma, ev, lc) -> one report row per
+# cluster or standalone instance, with versions_behind, compliance_status, support dates and pending actions.
+# Cluster members are not rows of their own: a cluster is judged once.
 def rows:
   $ARGS.named as $A | ($A.account // "") as $account | ($A.profile // "") as $profile | ($A.region // "") as $region
   | ($A.clusters[0] // []) as $cl | ($A.instances[0] // []) as $in | ($A.pma[0] // []) as $pma
@@ -94,7 +115,9 @@ def rows:
       | ($tg | map(.EngineVersion)) as $newer
       | ([ $tg[] | select(.AutoUpgrade == true) | .EngineVersion ] | .[-1] // null) as $auto_target
       | ([ ($e.targets // [])[] | select(.IsMajorVersionUpgrade == true) ] | length) as $major_targets
+      # versions_behind = how many valid newer minor targets RDS lists (null when the lookup failed / deprecated)
       | (if $known then ($newer | length) else null end) as $behind
+      # compliance: UNKNOWN without a usable lookup; COMPLIANT when behind <= --max-behind; else NON-COMPLIANT
       | (if $known | not then "UNKNOWN" elif $behind <= $max_behind then "COMPLIANT" else "NON-COMPLIANT" end) as $status
       | ($lc[$r.engine] // null) as $l
       | ([ ($l.majors // [])[] | select(.MajorEngineVersion == $major) | .SupportedEngineLifecycles[]? ]) as $lcs
@@ -136,21 +159,27 @@ def rows:
 # $ARGS.named.exc = [null] or absent: feature off; [[entries]]: compliance_exceptions.conf entries (validated by the script).
 # An unexpired entry for the scope makes the server compliant (actual_status keeps the evaluated one); expires = last valid
 # UTC day; within 14 days -> "expiring soon"; actual already compliant -> "no longer needed"; past expiry -> normal status.
+# exc_list: the entries array, or null when the feature is off; exc_on: true when it is on.
 def exc_list: (($ARGS.named.exc // [null])[0]);
 def exc_on: exc_list != null;
+# exc_left($d): whole UTC days from today to the expiry day $d (0 = expires today, negative = expired).
 def exc_left($d): (($d + "T00:00:00Z" | fromdateiso8601) / 86400 | floor) - ($now | floor / 86400 | floor);
+# exc_find($scope; $acct; $id): the first entry for this account + identifier (case-insensitive) + scope, or null.
 def exc_find($scope; $acct; $id): ($id | ascii_downcase) as $i
   | [ exc_list[]? | select(.account == $acct and (.identifier | ascii_downcase) == $i and ((.scopes | index([$scope])) != null)) ] | .[0];
+# exc_eval($e; $ok): exception fields for a row; $ok = the evaluated status is already compliant.
 def exc_eval($e; $ok):
   if $e == null then {exception: "no", exception_reason: "", exception_expires: "", exception_flag: ""}
   else exc_left($e.expires) as $d
   | {exception: (if $d < 0 then "expired" else "yes" end), exception_reason: $e.reason, exception_expires: $e.expires,
      exception_flag: (if $d < 0 then "exception expired"
                       else [ (if $ok then "no longer needed" else empty end), (if $d <= 14 then "expiring soon" else empty end) ] | join(", ") end)} end;
+# exc_unmatched($scope; $rows): entries of this scope that match no row (typo or decommissioned server).
 def exc_unmatched($scope; $rows):
   [ exc_list[]? | select((.scopes | index([$scope])) != null) | . as $e | ($e.identifier | ascii_downcase) as $i
     | select([ $rows[] | select(.account_id == $e.account and (.identifier | ascii_downcase) == $i) ] | length == 0)
     | {line, account, identifier} ];
+# exc_counts($rows; $scope): summary.exceptions counts (entries, applied, attention, expired, unmatched...).
 def exc_counts($rows; $scope):
   {entries: ([ exc_list[]? | select((.scopes | index([$scope])) != null) ] | length),
    applied: ([ $rows[] | select(.exception == "yes") ] | length),
@@ -159,15 +188,21 @@ def exc_counts($rows; $scope):
    no_longer_needed: ([ $rows[] | select(.exception == "yes" and (.exception_flag | contains("no longer needed"))) ] | length),
    expired: ([ $rows[] | select(.exception == "expired") ] | length),
    unmatched: exc_unmatched($scope; $rows)};
+# exc_apply: evaluate the patch exception for one row; actual_status keeps the real result.
 def exc_apply:   # patch scope; rows keep compliance_status = COMPLIANT so every count, %, alert and exit code includes them
   exc_eval(exc_find("patch"; .account_id; .identifier); .compliance_status == "COMPLIANT") as $v
   | . + $v + {actual_status: .compliance_status} | if $v.exception == "yes" then .compliance_status = "COMPLIANT" else . end;
+# exc_label: status text shown to people ("COMPLIANT (EXCEPTION)" for an applied exception).
 def exc_label: if .exception == "yes" then "COMPLIANT (EXCEPTION)" else .compliance_status end;
+# exc_cols: extra CSV / page columns, only when exceptions are on.
 def exc_cols: if exc_on then ["exception","exception_reason","exception_expires","exception_flag","actual_status"] else [] end;
 
 # ------------------------------------------------------------------ finalize: filters, sort, summary
+# st_rank: sort order of statuses (NON-COMPLIANT first).
 def st_rank: {"NON-COMPLIANT": 0, "UNKNOWN": 1, "COMPLIANT": 2}[.] // 3;
+# pct($a; $b): $a / $b as a percentage with one decimal (0 when $b is 0).
 def pct($a; $b): if $b == 0 then 0 else ($a * 1000 / $b | round) / 10 end;
+# counts: total / compliant / non_compliant / unknown of an array of rows.
 def counts: {total: length, compliant: (map(select(.compliance_status == "COMPLIANT")) | length),
              non_compliant: (map(select(.compliance_status == "NON-COMPLIANT")) | length),
              unknown: (map(select(.compliance_status == "UNKNOWN")) | length)};
@@ -176,9 +211,11 @@ def counts: {total: length, compliant: (map(select(.compliance_status == "COMPLI
 # Final status: error (any AWS error there, incl. a failed discovery probe), empty (no DB instance / cluster),
 # databases (has instances / clusters). checked = databases + empty + error.
 def region_rank: {"databases": 0, "error": 1, "empty": 2}[.] // 3;
+# region_counts: counts + % compliant, pending maintenance and past-standard-support for a group of rows.
 def region_counts: counts + {pct_compliant: (if length == 0 then null else pct(counts.compliant; length) end),
                              with_pending: (map(select(.pending_actions_count > 0)) | length), pending_total: (map(.pending_actions_count) | add // 0),
                              past_standard_support: (map(select(.past_standard_support)) | length)};
+# region_breakdown: one entry per account + region checked, with its final status and counts (see above).
 def region_breakdown:
   . as $r
   | ($r.rows | group_by([.account_id, .region]) | map({key: (.[0].account_id + "|" + .[0].region), value: .}) | from_entries) as $by
@@ -195,6 +232,7 @@ def region_breakdown:
   | sort_by([(.status | region_rank), .account_id, .region]);
 # Dates relative to $now are recomputed here (collection run AND --merge), so a merged report counts days from merge time.
 def days_from($d): if $d == null then null else ((($d | epoch_of_day) - $now) / 86400 | floor) end;
+# refresh_row: recompute support days / flag and next maintenance date against $now.
 def refresh_row:
   (if .standard_support_end != null then days_from(.standard_support_end) as $days
      | .support_days_left = $days
@@ -206,6 +244,7 @@ def refresh_row:
                                    | . + {next_date: $m, days_until: days_from($m)})
   | ([.pending_actions_detail[].next_date | select(. != null)] | min) as $nx
   | .next_maintenance = $nx | .days_until_maintenance = days_from($nx);
+# account_breakdown($regs): one summary entry per account (regions with databases, errors, counts).
 def account_breakdown($regs):
   . as $r
   | [ ($r.meta.accounts // [])[] | . as $a | [$r.rows[] | select(.account_id == $a.account)] as $g
@@ -238,6 +277,8 @@ def annotate_globals:
                        else ["Aurora PostgreSQL: modify-global-cluster upgrades every member in one managed minor upgrade"] end) | join("; "))
          elif .global_role == "unknown" then .note = ([(.note | split("; ")[] | select(. != "" and (startswith("global database membership") | not)))] + ["global database membership unknown"] | join("; "))
          else . end));
+# global_summary: one entry per Aurora global database with its members (primary first), overall status
+# (worst member), and flags when the member versions or statuses differ.
 def global_summary:
   . as $r
   | ([($r.meta.globals // [])[] | {key: "\(.account)|\(.id)", value: .}] | from_entries) as $gi
@@ -258,15 +299,19 @@ def global_summary:
          region_status_mismatch: ($sc | group_by(.current_version) | any(.[]; (map(.compliance_status) | unique | length) > 1)),
          pending: ([$g[].pending_actions_detail[] | select(.on | startswith("global ")) | .text] | unique)})
   | sort_by([(.overall_status | st_rank), .account_id, .global_cluster]);
+# finalize (mode finalize): apply account names, refresh dates, exceptions and global database info, filter
+# (--non-compliant-only), sort, and build the summary block used by every renderer.
 def finalize:
   (($ARGS.named.acct_names // {}) as $cn | .meta.accounts |= ((. // []) | map(. + {name: (if ($cn[.account] // "") != "" then $cn[.account] else (.name // "") end)})))
   | ([.meta.accounts[] | {key: .account, value: .name}] | from_entries) as $an
   | (.rows |= map(refresh_row | del(.upgrade_command) | . + {account_name: ($an[.account_id] // "")}))   # files saved before v1.4.0 carry upgrade_command
+  # exceptions are applied before anything is counted, so an excepted server counts as COMPLIANT everywhere
   | (if exc_on then .rows |= map(exc_apply) else . end)
   | annotate_globals
   | . as $r
   | ($r | global_summary) as $gs
   | ($r | region_breakdown) as $regs
+  # --non-compliant-only hides rows from the list; the summary ($all) still counts every row
   | ($r.rows | map(select(($nc_only | not) or .compliance_status == "NON-COMPLIANT"))
              | sort_by([.engine, (.compliance_status | st_rank), -(.versions_behind // -1), (.identifier | ascii_downcase), .account_id, .region])) as $rows
   | ($r.rows | counts) as $all
@@ -303,18 +348,24 @@ def finalize:
           } | if .exceptions == null then del(.exceptions) else . end)};
 
 # ------------------------------------------------------------------ text
+# pad($n) / rpad($n): left / right align text to $n characters (pad also cuts longer text).
 def pad($n): tostring | if length >= $n then .[0:$n] else . + (" " * ($n - length)) end;
 def rpad($n): tostring | if length >= $n then . else (" " * ($n - length)) + . end;
+# short_list: up to 4 versions as a list, else the first 3 + count + latest.
 def short_list: if length == 0 then "-" elif length <= 4 then join(", ") else (.[:3] | join(", ")) + ", ... +\(length - 3) (latest \(.[-1]))" end;
+# pend_summary: one line of pending maintenance counts per action.
 def pend_summary: "on \(.with_pending) server(s): " + (.pending_by_action | to_entries | map("\(.key) \(.value)") | join(", ") | if . == "" then "none" else . end);
+# pend_tip: pending actions with auto-apply / forced dates (UTC = IST), for the HTML tooltip.
 def pend_tip: [ .pending_actions_detail[] | .text + (if .auto_applied_after_utc then " | auto-apply \(.auto_applied_after_utc) = \(.auto_applied_after_ist)" else "" end)
                 + (if .forced_apply_utc then " | forced \(.forced_apply_utc) = \(.forced_apply_ist)" else "" end) ] | join("\n");
+# region_mode_txt / region_line: how regions were chosen, and the "N checked, ..." line.
 def region_mode_txt: {"discover": "discovery probe, \(.probe_parallel) in parallel; full scan only where databases or a probe error",
                        "full": "every enabled region scanned in full (--no-discover)", "explicit": "queried directly, no probe", "merge": "merged offline from saved data"}[.mode] // .mode;
 def region_line: "\(.checked) checked, \(.with_databases) with databases, \(.empty) empty, \(.error) error\(if .error == 1 then "" else "s" end)";
 # Region NAMES are never listed in the report header; empty regions (no DB instance / cluster) are only counted.
 # Rows / CSV show regions with databases or an AWS error; JSON summary.regions keeps every region (incl. empty).
 def shown_regions: [.summary.regions[] | select(.status != "empty")];
+# text (mode text): the plain-text report.
 def text:
   . as $r | $r.summary as $s | $s.region_overview as $ro | (($r.meta.accounts | length) > 1) as $multi
   | ([12, ($r.rows[] | (.current_version, .latest_minor_version) | tostring | length)] | max + 2) as $vw
@@ -383,37 +434,47 @@ def text:
     "  Read-only: nothing was changed.";
 
 # ------------------------------------------------------------------ csv / json
+# cols: base per-server CSV columns (in order).
 def cols: ["account_id","profile","region","resource_type","identifier","members","engine","major_version","current_version","latest_minor_version",
            "versions_behind","newer_versions","default_auto_upgrade_target","compliance_status","auto_minor_upgrade","standard_support_end","extended_support_end","support_flag",
            "pending_actions_count","pending_actions","deprecated_version","maint_window_utc","maint_window_ist"];
+# csv (mode csv): per-server CSV; free-text exception fields get a formula guard.
 def csv:
   . as $r
   | (cols + ["next_maintenance","days_until_maintenance","global_cluster","global_role","account_name"] + exc_cols | @csv),
     ($r.rows[] | . as $x | ([cols[] | if . == "compliance_status" then ($x | exc_label) else $x[.] end] | map(if type == "array" then join(" ") elif . == null then "" else . end))
        + [($x.next_maintenance // ""), ($x.days_until_maintenance // ""), ($x.global_cluster // ""), ($x.global_role // ""), ($x.account_name // "")]
        + [exc_cols[] | ($x[.] // "") | if test("^[=+@\t\r-]") then "'" + . else . end] | @csv);   # free-text reason: formula guard
+# csv_regions (mode csv_regions): region breakdown CSV (regions with databases or errors + an ALL row).
 def csv_regions:
   [["account_id","account_id"],["profile","profile"],["region","region"],["status","status"],["total","total"],["compliant","compliant"],
    ["non_compliant","non_compliant"],["unknown","unknown"],["pct_compliant","pct_compliant"],["servers_with_pending_maintenance","with_pending"],
    ["pending_actions","pending_total"],["past_standard_support","past_standard_support"],["aws_errors","errors"],
    ["probe_instances_max20","probe_instances"],["probe_clusters_max20","probe_clusters"]] as $c
   | ($c | map(.[0]) | @csv), ((shown_regions + [.summary.regions_total])[] | . as $x | [$c[] | $x[.[1]] | if . == null then "" else . end] | @csv);
+# json_out (mode json): the finalized report as is; alert (mode alert): compact payload for webhooks.
 def json_out: .;
 def alert: {summary: .summary, non_compliant: [.rows[] | select(.compliance_status == "NON-COMPLIANT") | {account_id, region, identifier, engine, current_version, latest_minor_version, versions_behind}], errors: .errors};
 
 # ------------------------------------------------------------------ html
+# stc / sfc: CSS class for a compliance status / support flag.
 def stc: {"COMPLIANT": "ok", "NON-COMPLIANT": "bad", "UNKNOWN": "unk"}[.] // "unk";
 def sfc: if startswith("past") then "bad" elif startswith("standard support ends") then "warn" elif . == "ok" then "ok" else "muted" end;
+# card / cardx: summary cards at the top of the HTML page (cardx is clickable).
 def card($label; $val; $cls; $sub): "<div class=\"card \($cls)\" data-k=\"\($label | ascii_downcase | gsub("[^a-z]+"; "-"))\"><div class=\"v\">\($val | h)</div><div class=\"l\">\($label | h)</div><div class=\"s\">\($sub | h)</div></div>";
 def cardx($label; $val; $cls; $sub; $act; $ic; $pop):   # v1.5.0 clickable card (role=button)
   "<div class=\"card \($cls)\" data-k=\"\($label | ascii_downcase | gsub("[^a-z]+"; "-"))\" data-act=\"\($act)\" role=\"button\" tabindex=\"0\">"
   + (if $ic != "" then "<span class=\"ic\" aria-hidden=\"true\">\($ic)</span>" else "" end)
   + "<div class=\"v\">\($val | h)</div><div class=\"l\">\($label | h)</div><div class=\"s\">\($sub | h)</div>"
   + (if $pop then "<div class=\"pop\" role=\"tooltip\"></div>" else "" end) + "</div>";
+# riskc: CSS class $c when $n > 0, else "zero".
 def riskc($n; $c): if $n > 0 then $c else "zero" end;
+# dleft: days as text ("in N day(s)", "today", "N day(s) overdue").
 def dleft: if . == null then "" elif . < 0 then "\(-.) day(s) overdue" elif . == 0 then "today" else "in \(.) day(s)" end;
+# gbadge: "global" badge next to an Aurora global database member.
 def gbadge: if .global_role == "unknown" then " <span class=\"gb unk\" title=\"describe-global-clusters unavailable for this account\">global: unknown</span>"
   elif (.global_cluster // "") != "" then " <span class=\"gb\(if ._gmm then " mm" else "" end)\" title=\"\(if ._gmm then "Global DB members differ (version or status across regions)" else "Aurora global database" end)\">global: \(.global_cluster | h) &middot; \(.global_role | h)\(if .member_count == 0 then " (headless)" else "" end)</span>" else "" end;
+# html_row: one <tr> of the main HTML table.
 def html_row:
   . as $x
   | "<tr data-i=\"\(._i)\"><td>" + (if .exception == "yes" then "<span class=\"st ok exc\" title=\"Exception until \(.exception_expires | h); actual status \(.actual_status | h)\">COMPLIANT (EXCEPTION)</span><div class=\"sub\">actual \(.actual_status | h)</div>"
@@ -433,8 +494,10 @@ def html_row:
        else "\(.exception_reason | h)<div class=\"sub\">until \(.exception_expires | h)</div>"
             + (if .exception_flag != "" then " <span class=\"st \(if .exception == "expired" then "bad" else "warn" end) xf\">\(.exception_flag | h)</span>" else "" end) end) + "</td>" else "" end)
   + "</tr>";
+# rgc / pctc: CSS class for a region status / a compliance percentage.
 def rgc: {"databases": "db", "error": "bad", "empty": "unk"}[.] // "unk";
 def pctc: if . == null then "muted" elif . >= 100 then "ok" elif . >= 80 then "warn" else "bad" end;
+# region_tr($foot): one row of the per-region table ($foot = the All regions total row).
 def region_tr($foot):
   "<tr\(if $foot then " class=\"foot\"" else " data-k=\"\(.account_id | h)|\(.region | h)\"" end)><td>\(if $foot then "<b>All regions</b>" else (if (.account_name // "") != "" then "\(.account_name) (\(.account_id))" else .account_id end | h) + "<div class=\"sub\">\(.profile | h)</div>" end)</td>"
   + "<td>\(if $foot then "" else "<b>\(.region | h)</b>" end)</td>"
@@ -444,11 +507,13 @@ def region_tr($foot):
   + "<td class=\"n \(.pct_compliant | pctc)\" data-s=\"\(.pct_compliant // -1)\">" + (if .pct_compliant == null then "-" else "\(.pct_compliant)%<div class=\"bar\"><i class=\"\(.pct_compliant | pctc)\" style=\"width:\(.pct_compliant)%\"></i></div>" end) + "</td>"
   + "<td class=\"n \(if .with_pending > 0 then "warn" else "" end)\" data-s=\"\(.with_pending)\">\(.with_pending)\(if .pending_total > 0 then "<div class=\"sub\">\(.pending_total) action(s)</div>" else "" end)</td>"
   + "<td class=\"n \(if .past_standard_support > 0 then "bad" else "" end)\" data-s=\"\(.past_standard_support)\">\(.past_standard_support)</td></tr>";
+# html_regions: the Per region section.
 def html_regions($r; $s; $ro; $multi):
   "<section id=\"regions\"><h2>Per region <span class=\"muted\">\($ro | region_line) &middot; \($ro | region_mode_txt | h)\(if $multi then " &middot; per account x region" else "" end) &middot; click a header to sort</span></h2>"
   + "<table class=\"sortable regions\"><thead><tr><th>Account</th><th>Region</th><th>Status</th><th>Total</th><th>Compliant</th><th>Non-compliant</th><th>Unknown</th><th>% compliant</th><th>Pending maint.</th><th>Past standard support</th></tr></thead><tbody>"
   + ($r | shown_regions | map(region_tr(false)) | join("")) + "</tbody><tfoot>" + ($s.regions_total | region_tr(true)) + "</tfoot></table>"
   + "</section>";
+# account_tr / html_accounts: the Per account table (multi-account and merged reports).
 def account_tr:
   "<tr data-a=\"\(.account_id | h)\"><td><b>\(if (.account_name // "") != "" then "\(.account_name) (\(.account_id))" else .account_id end | h)</b><div class=\"sub\">\(.profile | h)</div></td><td class=\"small\">\(.collected_utc | dash | h)\(if .source then "<div class=\"sub\">\(.source | h)</div>" else "" end)</td>"
   + "<td class=\"n\" data-s=\"\(.regions_with_databases)\">\(.regions_with_databases)\(if .errors > 0 then "<div class=\"sub bad\">\(.errors) error(s)</div>" else "" end)</td>"
@@ -461,13 +526,16 @@ def html_accounts($s):
   "<section id=\"accounts\"><h2>Per account <span class=\"muted\">\($s.accounts | length) account(s) &middot; click a header to sort</span></h2>"
   + "<table class=\"sortable accounts\"><thead><tr><th>Account</th><th>Collected</th><th>Regions with DBs</th><th>Total</th><th>Compliant</th><th>Non-compliant</th><th>Unknown</th><th>% compliant</th><th>Pending maint.</th><th>Past standard support</th></tr></thead><tbody>"
   + ($s.accounts | map(account_tr) | join("")) + "</tbody></table></section>";
+# html_sources: the Merged inputs section (only for --merge reports).
 def html_sources($r):
   if ($r.meta.merge // null) == null then "" else
   "<section id=\"sources\"><h2>Merged inputs <span class=\"muted\">\($r.meta.merge.files) file(s) &middot; per account the newest collection wins &middot; days to maintenance / support counted from merge time (\($r.meta.generated_utc | h))</span></h2>"
   + "<table class=\"sources\"><thead><tr><th>File</th><th>Collected</th><th>Accounts used</th><th>Accounts ignored (newer file exists)</th><th>Script</th></tr></thead><tbody>"
   + ($r.meta.merge.sources | map("<tr><td class=\"mono small\">\(.file | h)</td><td class=\"small\">\(.collected_utc | h)<div class=\"sub\">\(.collected_local // "" | h)</div></td><td>\(.used | join(", ") | dash | h)</td><td class=\"muted\">\(.superseded | join(", ") | dash | h)</td><td class=\"small\">v\(.script_version | h)</td></tr>") | join(""))
   + "</tbody></table></section>" end;
+# plural: "1 thing" / "N things".
 def plural($n; $one; $many): "\($n) \(if $n == 1 then $one else $many end)";
+# html_globals: the Global databases section (only when there are any).
 def html_globals($s):
   if $s.global_databases == 0 then "" else
   "<section id=\"globals\"><h3>Global databases <span class=\"muted\" id=\"g-cnt\">\($s.global_databases)</span></h3>"
@@ -485,6 +553,8 @@ def html_globals($s):
         + ([ (if $g.not_scanned > 0 then "\($g.not_scanned) member(s) not scanned" else empty end), ($g.pending[] | "pending: " + (. | h)) ] | if length == 0 then "" else "<p class=\"small muted\">" + join(" &middot; ") + "</p>" end)
         + "</details>"] | join(""))
   + "</section>" end;
+# page_data($r): JSON embedded in the page for lib/compliance_page.js (filters, totals, CSV export);
+# "<" and line separators are escaped so the JSON cannot close the <script> tag.
 def page_data($r):
   {cols: (cols + ["next_maintenance","days_until_maintenance","global_cluster","global_role","account_name"] + exc_cols),
    csv_acct: (if ($r.meta.accounts | length) == 1 then $r.meta.accounts[0].account else "" end), csv_stamp: ($r.meta.generated_utc | gsub("[^0-9]"; "") | .[0:12]),
@@ -495,6 +565,7 @@ def page_data($r):
    rows: [$r.rows[] | del(.pending_actions_detail, .excluded_targets, .version_warnings, .tags, .arn, .note, .global_arn, .global_pending_raw, .upgrade_command)]}
   + (if exc_on then {exc: true} else {} end)
   | tojson | gsub("<"; "\\u003c") | gsub("\u2028"; "\\u2028") | gsub("\u2029"; "\\u2029");
+# html (mode html): the self-contained offline HTML page (inline CSS + JS, no external requests).
 def html:
   . as $r | $r.summary as $s | $s.region_overview as $ro | (($r.meta.accounts | length) > 1) as $multi
   | ([$s.globals[] | select(.version_differs or .region_status_mismatch) | {key: "\(.account_id)|\(.global_cluster)", value: true}] | from_entries) as $gmm
@@ -591,6 +662,7 @@ def html:
   + "var r=(va!==null&&vb!==null)?parseFloat(va)-parseFloat(vb):a.textContent.localeCompare(c.textContent,undefined,{numeric:true});return dir[i]?r:-r;});rows.forEach(function(r){b.appendChild(r);});});});"
   + "})();</script><script>" + ($ARGS.named.pagejs // "") + "</script></body></html>";
 
+# ------------------------------------------------------------------ main: dispatch on $mode
 if $mode == "rows" then rows elif $mode == "finalize" then finalize elif $mode == "text" then text elif $mode == "csv" then csv
 elif $mode == "html" then html elif $mode == "json" then json_out elif $mode == "csv_regions" then csv_regions elif $mode == "alert" then alert
 elif $mode == "vkey_cmp" then vcmp($ARGS.named.a; $ARGS.named.b)
