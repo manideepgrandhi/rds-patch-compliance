@@ -8,6 +8,7 @@ A **read-only** patch compliance report for AWS databases. For every Aurora clus
 ./rds_patch_compliance_report.sh -P prod,nonprod -r us-east-1,ap-south-1 -F csv,html,txt -o ~/compliance
 ```
 
+For a walk-through of what happens when you run the script, a flow diagram, and the use of every file and function, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Get it (AWS CloudShell)
 
@@ -54,11 +55,11 @@ The zip is slim (v1.3.2): one top-level folder `rds-patch-compliance/` with only
 ./rds_patch_compliance_summary.sh --merge ~/compliance -F txt,html,csv -o ~/combined      # offline merge, 0 AWS calls (v1.3.0)
 ```
 
-Options: `-P` (repeatable), `-r` / `--all-regions` (with `--no-discover`, `--probe-parallel N`, see [Regions](#regions-discovery-and-region-wise-breakdown-v120)), `-e`, `-i`, `--max-behind N` (default 2: NON-COMPLIANT when versions_behind > 2, i.e. 3 or more), `--warn-days`, `--oracle-any-patch-line`, `-F txt,html,csv` (default txt to the screen; html / csv / several formats need `-o`), `--prefix`, `--fail-on-noncompliant` (exit 5), `--alert-email`, `--alert-webhook`, `--alert-webhook-format slack|json`, `--alert-on noncompliant|always`, `--alert-from`, `-v`.
+Options: `-P` (repeatable), `-r` / `--all-regions` (with `--no-discover`, `--probe-parallel N`, see [Regions](#regions-discovery-and-region-wise-breakdown-v120)), `-e`, `-i`, `--max-behind N` (default 2: NON-COMPLIANT when versions_behind > 2, i.e. 3 or more), `--warn-days`, `--oracle-any-patch-line`, `--exceptions FILE` (v1.6.0, passed through to the full report), `-F txt,html,csv` (default txt to the screen; html / csv / several formats need `-o`), `--prefix`, `--fail-on-noncompliant` (exit 5), `--alert-email`, `--alert-webhook`, `--alert-webhook-format slack|json`, `--alert-on noncompliant|always`, `--alert-from`, `-v`.
 
 Output: header (run time UTC + IST, accounts / regions, the `Regions  : N checked, M with databases, K empty, E errors` count line - no region name lists, the rule), overall totals and % compliant, a **per-region** table (regions with databases or an AWS error, plus an All-regions row), per engine the major-version breakdown with compliant / non-compliant / unknown and % plus the latest minor per major (Oracle per patch line), key flags as counts (past standard support, support ending within N days, auto minor upgrade off, pending maintenance), then the **NON-COMPLIANT servers** (`!!` lines in txt, red table in HTML; account, region, engine, identifier, current -> latest minor, behind, support flag; most behind first, then name) or `*** All servers compliant ***`, and the UNKNOWN servers with the reason. Compliant servers are not listed. CSV: `<prefix>_<UTC stamp>_noncompliant.csv` (non-compliant rows only) + `<prefix>_<UTC stamp>_summary.csv` (overall, engine, major and flag rows) + `<prefix>_<UTC stamp>_regions.csv` (one row per account + region with databases or an AWS error, plus `ALL`; empty regions are only counted). Exit codes: 0, 1 usage, 2 pre-check / scan failed, 3 bad `--merge` input, 4 output, 5 non-compliant with `--fail-on-noncompliant`.
 
-**Save and merge (summary 1.3.0).** `--save-data [FILE.json]` writes the same raw data file as the full report (default `rds_patch_<ACCOUNTID>_<YYYYMMDD>.json` in the `-o` directory), so files from either script are interchangeable. `--merge FILE|DIR...` builds one summary from such files with jq only (0 AWS calls, Git Bash safe: CRLF `jq.exe`, `C:\...` paths, spaces): the newest `collected_at` wins per account, days to end of support / maintenance are recomputed at merge time, a bad or missing input exits 3. `--max-behind`, `--warn-days`, `--oracle-any-patch-line` (patch-line counting is redone from the saved targets), `--fail-on-noncompliant` and the alert options work with `--merge`; `-P/-r/-A/--no-discover/--probe-parallel/-e/-i/--save-data` are rejected. Merged output adds `Merged   : N file(s), offline` in the header (no region names), a **PER ACCOUNT** table (collected time, regions with databases, totals, %), and a **MERGED INPUTS** list (file, collected, accounts, used / superseded). All summaries now also write `<prefix>_<UTC stamp>_accounts.csv`; single-account file names carry the account number.
+**Save and merge (summary 1.3.0).** `--save-data [FILE.json]` writes the same raw data file as the full report (default `rds_patch_<ACCOUNTID>_<YYYYMMDD>.json` in the `-o` directory), so files from either script are interchangeable. `--merge FILE|DIR...` builds one summary from such files with jq only (0 AWS calls, Git Bash safe: CRLF `jq.exe`, `C:\...` paths, spaces): the newest `collected_at` wins per account, days to end of support / maintenance are recomputed at merge time, a bad or missing input exits 3. `--max-behind`, `--warn-days`, `--oracle-any-patch-line` (patch-line counting is redone from the saved targets), `--exceptions FILE` (v1.6.0), `--fail-on-noncompliant` and the alert options work with `--merge`; `-P/-r/-A/--no-discover/--probe-parallel/-e/-i/--save-data` are rejected. Merged output adds `Merged   : N file(s), offline` in the header (no region names), a **PER ACCOUNT** table (collected time, regions with databases, totals, %), and a **MERGED INPUTS** list (file, collected, accounts, used / superseded). All summaries now also write `<prefix>_<UTC stamp>_accounts.csv`; single-account file names carry the account number.
 
 Samples: [merged summary txt](samples/sample_summary_merged.txt), [merged summary html](samples/sample_summary_merged.html), [txt](samples/sample_summary.txt), [html](samples/sample_summary.html), [regions csv](samples/sample_summary_regions.csv). Tests: `tests/run_summary_tests.sh` (mock AWS; boundaries 2/3, `--max-behind`, all-compliant, unknown, Oracle, multi-profile, numbers equal to the full report, alerts, shellcheck); `tests/validate_cli.sh` also runs it through the real AWS CLI against the local fake endpoint.
 
@@ -265,6 +266,29 @@ With `-o DIR` each format is written to `DIR/<prefix>_[<ACCOUNTID>_]<YYYYmmdd_HH
 
 **Downloading from CloudShell:** copy the full path from the `Wrote ...` log line, then **Actions > Download file** and paste it, e.g. `/home/cloudshell-user/compliance/rds_patch_compliance_20261015_093000.html`. For several files: `cd ~ && zip -r compliance.zip compliance` and download `/home/cloudshell-user/compliance.zip`.
 
+## Compliance exceptions (v1.6.0)
+
+Approved exceptions for servers you know are non-compliant (decommission planned, vendor-pinned version, and so on). They come from one shared file, `compliance_exceptions.conf`. rds-patch-compliance, rds-backup-compliance and rds-compliance-report all use the same file and format.
+
+```text
+# account_id | identifier | scope | expires | reason
+111111111111 | legacy-aurora-pg12 | patch        | 2026-12-31 | Decommission in December, CHG-1234
+111111111111 | reports-pg         | patch,backup | 2027-03-31 | Vendor-pinned version | INC-77
+```
+
+* **File:** `--exceptions FILE` (config `exceptions = FILE`). The default is `compliance_exceptions.conf` next to the script, if present. With no file the feature is off and the reports are exactly as before. Start from [compliance_exceptions.conf.example](compliance_exceptions.conf.example). The real file is in `.gitignore`.
+* **Format:** all five fields are required. account_id is 12 digits. The identifier is exact and case-insensitive, with no wildcards and no region. scope is `patch`, `backup` or `patch,backup`. expires is a mandatory `YYYY-MM-DD` (UTC) and is the last day the exception applies. `#` comments and blank lines are ignored.
+* **Validation:** strict. A missing field, a bad account, scope or date, or a duplicate account + identifier for the same scope stops the run (exit 1) with `file:line`.
+* **Matched, not expired:** a **NON-COMPLIANT** server is shown as **Compliant (exception)** and counted as compliant in every %. The evaluated status is kept in `actual_status`. An **UNKNOWN** server stays **UNKNOWN**; the exception is still listed against it (exception fields are filled in) but the status and counts do not change. Flags: **expiring soon** (14 days or less) and **no longer needed** (the server is compliant anyway).
+* **Expired:** the server is evaluated normally and flagged **exception expired**. The log warns about expired entries and about entries that match no server.
+* **When applied:** only when the report is built. `--save-data` files never change.
+* **Outputs:**
+  * Summary: `COMPLIANT N (incl. X exceptions)`. The Compliant card pop-up shows Compliant, Non-compliant and "Exceptions expiring soon or no longer needed" (that line only when the count is above 0).
+  * HTML: an Exception column (reason, expiry, flag badge) and an **Exceptions** quick filter: all, exceptions only, non-exceptions, expiring soon or no longer needed, expired. The filter combines with the other filters, and the counts, tables and CSV export follow it.
+  * CSV / JSON: the CSV status column shows `COMPLIANT (EXCEPTION)`, and JSON keeps `COMPLIANT` with `"exception": "yes"`. Both get five fields at the end: `exception` (yes/no/expired), `exception_reason`, `exception_expires`, `exception_flag`, `actual_status`.
+  * Text: an EXCEPTIONS section.
+* `--fail-on-noncompliant` and `--non-compliant-only` treat an excepted NON-COMPLIANT server as compliant. UNKNOWN with an exception is still UNKNOWN.
+
 ## Usage
 
 ```
@@ -298,6 +322,8 @@ More in [EXAMPLES.md](EXAMPLES.md). `--help` lists every option.
 | `--alert-email`, `--alert-webhook`, `--alert-webhook-format slack|json`, `--alert-on noncompliant|always`, `--alert-test` | optional alerts (Slack text truncated at 35 000 chars) |
 | `--save-data [FILE.json]` | also write the raw data for a later `--merge` (v1.3.0) |
 | `--merge FILE\|DIR...` | offline merge of `--save-data` files, 0 AWS calls; `-o combined.html` names the output (v1.3.0) |
+| `--exceptions FILE` | compliance exceptions (v1.6.0); default `compliance_exceptions.conf` next to the script, if present |
+| `--tz ZONE` | second time zone for the generated time (default: Asia/Kolkata) |
 | `--config FILE` | key=value file, **parsed, never sourced**; CLI options override it; credentials are refused |
 | `--aws-timeout`, `--max-attempts`, `--keep-workdir`, `--dry-run`, `-v` | behaviour |
 
@@ -319,6 +345,7 @@ More in [EXAMPLES.md](EXAMPLES.md). `--help` lists every option.
       "rds:DescribePendingMaintenanceActions",
       "rds:DescribeDBEngineVersions",
       "rds:DescribeDBMajorEngineVersions",
+      "rds:DescribeGlobalClusters",
       "ec2:DescribeRegions",
       "iam:ListAccountAliases"
     ],
@@ -327,7 +354,7 @@ More in [EXAMPLES.md](EXAMPLES.md). `--help` lists every option.
 }
 ```
 
-`sts:GetCallerIdentity` needs no permission. DocumentDB and Neptune use the same `rds:` actions. Without `rds:DescribeDBMajorEngineVersions` the report still works; support dates show `unknown`. `iam:ListAccountAliases` (v1.5.0) is optional: without it accounts show the number only (or the config name). The AWS managed `ReadOnlyAccess` policy also covers both.
+`sts:GetCallerIdentity` needs no permission. DocumentDB and Neptune use the same `rds:` actions. Without `rds:DescribeDBMajorEngineVersions` the report still works; support dates show `unknown`. `rds:DescribeGlobalClusters` (v1.4.0) is used for Aurora global database membership; without it the report still works and membership shows as `unknown`. `iam:ListAccountAliases` (v1.5.0) is optional: without it accounts show the number only (or the config name). The AWS managed `ReadOnlyAccess` policy also covers these.
 
 ## Configuration file
 
@@ -342,6 +369,7 @@ No AWS account is used and nothing can reach AWS.
 
 ## Changelog
 
+* **1.6.0**: compliance exceptions (`--exceptions FILE` / `compliance_exceptions.conf`, see [Compliance exceptions](#compliance-exceptions-v160)). Applied at report and merge time; `--save-data` is unchanged. An unexpired exception turns NON-COMPLIANT into COMPLIANT (EXCEPTION) and counts as compliant; the evaluated status is kept in `actual_status`. UNKNOWN stays UNKNOWN (the exception is still listed against the server). Expiring soon / no longer needed / expired flags. HTML gets an Exception column, an Exceptions quick filter and the Compliant card pop-up. CSV and JSON get 5 columns at the end. Text gets an EXCEPTIONS section. With no file the outputs are unchanged. The summary script is also 1.6.0 and gains `--exceptions FILE`, passed through to the full report (including with `--merge`).
 * **1.5.1** - HTML: Global / Standalone checkboxes replace the Global cluster dropdown (Aurora only); Global databases card with mismatch count; collapsible global section (one line per global DB); amber global badge on mismatch; search covers global DB name, account number, engine and version, opens matching global sections, empty state. Fixes: search is trimmed and case-insensitive everywhere (incl. state restored from the page), special characters match literally, a no-match search shows "No servers match." instead of a blank page, global rows are keyed by account + name (no clash when two accounts use the same global name), and global sections a search opened collapse again when the search clears. Tests: browser_global.js (checkboxes, section, search cases, literal special characters), XSS via global name and hostile search.
 * **1.5.0** - HTML: Engine compliance table under the cards (collapsible majors, Show all majors, sortable, clickable counts, Filtered tag, sticky header); clickable, keyboard-focusable cards in a status row and a risk row with the active card highlighted; new **Flag** dropdown (Extended Support, support ending, auto minor off, pending, not returned) and **All global databases** option; per-engine pop-up on Non-compliant / Unknown; engine server sections collapsible (Expand all / Collapse all); CSV column picker remembered in localStorage; the old per engine and major version table is replaced by the engine table. Account names (config `ACCOUNTID = name` > `iam list-account-aliases` > number), `account_name` column at the end of CSV / JSON (28 CSV columns), text and merge. Mock and tests extended (browser checks, XSS via pop-up and account names).
 

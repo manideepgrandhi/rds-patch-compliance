@@ -39,7 +39,7 @@ P2=(-P prod,nonprod -r us-east-1,ap-south-1)
 
 echo "== usage"
 t help 0 fleet --help; has help out 'versions_behind > --max-behind'
-t version 0 fleet --version; has version out '1.3.0'
+t version 0 fleet --version; has version out '1.6.0'
 t badopt 1 fleet --bogus
 t badfmt 1 fleet -r us-east-1 -F xml
 t htmlnoout 1 fleet -r us-east-1 -F html
@@ -212,6 +212,38 @@ MOCK_SCENARIO=oracle RDS_PCR_NOW=1790000000 "$FULL" -P prod -r us-east-1 --save-
 sm m_ora 0 --merge "$OUT/ora.json" --oracle-any-patch-line
 chk "oracle any-line recounted at merge = live any-line" bash -c "MOCK_SCENARIO=oracle RDS_PCR_NOW=1791000000 '$S' -P prod -r us-east-1 --oracle-any-patch-line 2>/dev/null | grep OVERALL | diff - <(grep OVERALL '$OUT/m_ora.out')"
 chk "merge mode made 0 AWS calls" test ! -e "$OUT/aws_called"
+
+echo "== v1.6.0: --exceptions passthrough"
+EXS="$OUT/exc"; mkdir -p "$EXS"
+cat >"$EXS/ok.conf" <<'CONF'
+# account_id | identifier | scope | expires | reason
+111111111111 | legacy-aurora-pg12 | patch        | 2026-12-31 | Decommission Dec 2026 (CHG-1)
+111111111111 | inv-mysql          | patch,backup | 2026-10-10 | Vendor app pinned | owner: dba
+111111111111 | billing-pg         | patch        | 2027-03-01 | Freeze <b>q1</b>
+111111111111 | hr-sql             | patch        | 2026-10-02 | Old waiver
+  111111111111|old-aurora-pg11|PATCH|2026-10-03|=Ends today
+
+111111111111 | ghost-db           | patch        | 2027-01-01 | Not there
+111111111111 | analytics-pg       | backup       | 2027-01-01 | Backup only (not applied by the patch tool)
+CONF
+SD="$MG/rds_patch_111111111111_$(TZ=UTC date -d @1790000000 +%Y%m%d).json"
+chk "exc summary: us-east-1 save-data fixture exists" test -s "$SD"
+has help out '--exceptions'
+sm exc_sum 0 --merge "$SD" --exceptions "$EXS/ok.conf"
+has exc_sum out 'COMPLIANT 13'
+has exc_sum out 'NON-COMPLIANT 5'
+has exc_sum out 'UNKNOWN 1'
+has exc_sum out 'old-aurora-pg11'
+hasnt exc_sum out 'legacy-aurora-pg12'
+hasnt exc_sum out 'inv-mysql'
+sm exc_nofile 1 --merge "$SD" --exceptions "$EXS/missing.conf"
+has exc_nofile err 'Exceptions file not readable'
+RDS_PCR_NOW=1791000000 t exc_live 0 fleet -P prod -r us-east-1 --exceptions "$EXS/ok.conf"
+has exc_live out 'COMPLIANT 13'
+has exc_live out 'UNKNOWN 1'
+has exc_live out 'old-aurora-pg11'
+has exc_live err 'Exceptions (patch): 3 applied'
+hasnt exc_live out 'legacy-aurora-pg12'
 
 echo "== hygiene"
 chk "shellcheck summary script" shellcheck "$S"

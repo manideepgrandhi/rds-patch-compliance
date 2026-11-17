@@ -13,11 +13,14 @@
 #         no usable profile, 4 output/internal error, 130 interrupted.
 # Logic and rendering live in lib/compliance.jq.
 
+# ----------------------------------------------------------------------------
+# Settings: strict mode, version, library paths
+# ----------------------------------------------------------------------------
 set -Eeuo pipefail
 umask 077
 
 readonly SCRIPT_NAME="${0##*/}"
-readonly SCRIPT_VERSION="1.5.1"
+readonly SCRIPT_VERSION="1.6.0"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly SCRIPT_DIR
 LIB="${RDS_PCR_LIB:-$SCRIPT_DIR/lib}/compliance.jq"
@@ -29,6 +32,9 @@ if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 4) ))
     echo "$SCRIPT_NAME: bash 4.4+ required (found $BASH_VERSION)" >&2; exit 2
 fi
 
+# ----------------------------------------------------------------------------
+# Defaults (a --config file overrides them, command-line options override both)
+# ----------------------------------------------------------------------------
 PROFILES=()
 REGIONS=()
 ALL_REGIONS=0
@@ -73,7 +79,9 @@ TZ_SET=0
 MAX_BEHIND_SET=0
 JQ_CRLF=0
 STAMP=""
+EXC_FILE=""; EXC_JSON="null"; EXC_PATH=""   # compliance exceptions (v1.6.0): --exceptions FILE
 
+# Run-time state, filled while the script runs
 WORK=""
 AWS_CALLS=0
 AWS_FAILS=0
@@ -83,19 +91,30 @@ LC_UNSUPPORTED=0
 declare -a ACCOUNTS_JSON=() ALL_REGIONS_SEEN=() WRITTEN=()
 REGION_MODE="explicit"   # explicit (-r / profile default) | discover (-A, probed) | full (-A --no-discover)
 
+# ----------------------------------------------------------------------------
+# Logging
+# ----------------------------------------------------------------------------
+# _ts: timestamp for log lines (box local time).
 _ts() { date '+%Y-%m-%d %H:%M:%S'; }
+# _log LEVEL MESSAGE...: print a timestamped line to stderr; also append it to --log-file (not in --dry-run).
 _log() {
     local level="$1"; shift
     local line; line="$(_ts) [$level] $*"
     printf '%s\n' "$line" >&2
     if [[ -n "$LOG_FILE" && "$DRY_RUN" -eq 0 ]]; then printf '%s\n' "$line" >>"$LOG_FILE" 2>/dev/null || true; fi
 }
+# Level wrappers; log_debug prints only with -v.
 log_info()  { _log INFO "$@"; }
 log_warn()  { _log WARN "$@"; }
 log_error() { _log ERROR "$@"; }
 log_debug() { [[ "$VERBOSE" -eq 1 ]] && _log DEBUG "$@"; return 0; }
+# die CODE MESSAGE...: log an ERROR line and exit with CODE.
 die() { local code="$1"; shift; log_error "$@"; exit "$code"; }
 
+# ----------------------------------------------------------------------------
+# Usage
+# ----------------------------------------------------------------------------
+# usage: print the --help text.
 usage() {
     cat <<USAGE
 $SCRIPT_NAME v$SCRIPT_VERSION - minor-version patch compliance report for AWS databases (read-only)
@@ -125,6 +144,11 @@ Compliance:
                             Default off: only the same line counts (mrp->mrp, rur->rur, plain RU->plain RU),
                             matching the RDS console Modify page. See README "Oracle versions".
       --fail-on-noncompliant  Exit 5 when any NON-COMPLIANT server is found (default: exit 0)
+      --exceptions FILE     Compliance exceptions (v1.6.0): lines "account_id | identifier | scope | expires | reason";
+                            a listed NON-COMPLIANT server (scope patch) shows COMPLIANT (EXCEPTION) and counts as
+                            compliant until the expiry date. UNKNOWN stays UNKNOWN; the exception is still listed.
+                            Default: compliance_exceptions.conf next to the script, if present (none = off).
+                            Any malformed line stops the run. See compliance_exceptions.conf.example
 
 Report:
   -F, --format LIST         text,csv,json,html (default: text). Several formats need -o
@@ -175,6 +199,7 @@ USAGE
 # ----------------------------------------------------------------------------
 # Helpers
 # ----------------------------------------------------------------------------
+# add_list ARRAY_NAME 'a, b,c': split on commas, trim spaces, append the non-empty items to the named array.
 add_list() {
     local -n _arr="$1"
     local _item; local -a _parts
@@ -185,11 +210,20 @@ add_list() {
     done
     return 0
 }
+# is_true VALUE: success for 1 / y / yes / true / on (any case).
 is_true() { case "${1,,}" in 1|y|yes|true|on) return 0 ;; *) return 1 ;; esac; }
+# need_arg OPTION REMAINING_ARGC: exit 1 when an option that needs a value is the last argument.
 need_arg() { [[ "$2" -ge 2 ]] || die 1 "Option $1 requires a value (see --help)"; }
+# redact_url URL: keep only scheme://host, so a webhook token never reaches the log.
 redact_url() { if [[ "$1" =~ ^([a-zA-Z]+://[^/]+) ]]; then printf '%s/...' "${BASH_REMATCH[1]}"; else printf '<webhook>'; fi; }
+# json_array ITEM...: print the items as a compact JSON array of strings ([] when there are none).
 json_array() { if (( $# )); then printf '%s\n' "$@" | jq -R . | jq -cs .; else printf '[]'; fi; }
 
+# ----------------------------------------------------------------------------
+# Config file loading and argument parsing
+# ----------------------------------------------------------------------------
+# load_config FILE: read 'key = value' settings and '123456789012 = name' account names into the globals.
+# Unknown keys and credentials stop the run (exit 1). Command-line options are applied after this and win.
 load_config() {
     local file="$1" line key val lineno=0
     [[ -r "$file" ]] || die 1 "Config file not readable: $file"
@@ -230,6 +264,7 @@ load_config() {
             non_compliant_only)     if is_true "$val"; then NC_ONLY=1; else NC_ONLY=0; fi ;;
             oracle_any_patch_line)  if is_true "$val"; then ORACLE_ANY_LINE=1; else ORACLE_ANY_LINE=0; fi ;;
             fail_on_noncompliant)   if is_true "$val"; then FAIL_ON_NC=1; else FAIL_ON_NC=0; fi ;;
+            exceptions)             EXC_FILE="${val/#\~/$HOME}" ;;
             log_file)               LOG_FILE="${val/#\~/$HOME}" ;;
             aws_timeout)            AWS_TIMEOUT="$val" ;;
             max_attempts)           MAX_ATTEMPTS="$val" ;;
@@ -246,6 +281,7 @@ load_config() {
     done <"$file"
 }
 
+# parse_args "$@": load --config first (wherever it appears), then apply the options in order.
 parse_args() {
     local i j
     for (( i = 1; i <= $#; i++ )); do
@@ -257,9 +293,12 @@ parse_args() {
     [[ -n "$CONFIG_FILE" ]] && load_config "$CONFIG_FILE"
     local -A seen=()
     local opt
+    # reset_once ARRAY_NAME: empty a list the first time its option is seen, so -P / -r / -e ... replace the
+    # config value instead of adding to it; later uses of the same option append.
     reset_once() { [[ -n "${seen[$1]:-}" ]] && return 0; seen[$1]=1; local -n _a="$1"; _a=(); }
     while (( $# )); do
         opt="$1"
+        # --option=value is split into --option value
         if [[ "$opt" == --*=* ]]; then set -- "${opt%%=*}" "${opt#*=}" "${@:2}"; opt="$1"; fi
         case "$opt" in
             -P|--profile)       need_arg "$opt" $#; reset_once PROFILES; add_list PROFILES "$2"; shift 2 ;;
@@ -286,6 +325,7 @@ parse_args() {
             --non-compliant-only) NC_ONLY=1; shift ;;
             --oracle-any-patch-line) ORACLE_ANY_LINE=1; shift ;;
             --fail-on-noncompliant) FAIL_ON_NC=1; shift ;;
+            --exceptions)       need_arg "$opt" $#; EXC_FILE="$2"; shift 2 ;;
             -l|--log-file)      need_arg "$opt" $#; LOG_FILE="$2"; shift 2 ;;
             --config)           shift 2 ;;
             --aws-timeout)      need_arg "$opt" $#; AWS_TIMEOUT="$2"; shift 2 ;;
@@ -306,6 +346,11 @@ parse_args() {
     done
 }
 
+# ----------------------------------------------------------------------------
+# Validation
+# ----------------------------------------------------------------------------
+# validate: check and normalise every option (formats, paths, numbers, regions, alerts) before any AWS call.
+# Bad input exits 1. Also loads the exceptions file here, so a bad exceptions line fails before the scan.
 validate() {
     (( TAG_IGNORED )) && log_warn "-T / tag_columns is ignored since v1.4.0: tag columns are no longer shown (tags stay in --save-data / JSON)"
     command -v jq >/dev/null 2>&1 || die 2 "jq not found in PATH (install jq 1.6+)"
@@ -357,11 +402,16 @@ validate() {
     for x in "${ALERT_WEBHOOKS[@]}"; do [[ "$x" =~ ^https?:// ]] || die 1 "--alert-webhook must be an http(s) URL: $(redact_url "$x")"; done
     if [[ -n "$LOG_FILE" && "$DRY_RUN" -eq 0 ]]; then touch -- "$LOG_FILE" 2>/dev/null || die 1 "Cannot write log file: $LOG_FILE"; fi
     (( MERGE )) || (( ${#PROFILES[@]} )) || PROFILES=("")
+    load_exceptions   # before any AWS call: a bad line stops the run now, not after the scan
+    [[ "$EXC_JSON" != null ]] && log_info "Exceptions file $EXC_PATH: $(jq -r 'length' <<<"$EXC_JSON" | tr -d '\r') entries"
+    return 0
 }
 
+# filters_json: the -e / -i filters as JSON {engines, identifiers}, passed to compliance.jq as $f.
 filters_json() {
     jq -cn --argjson e "$(json_array "${ENGINES[@]}")" --argjson i "$(json_array "${IDENTIFIERS[@]}")" '{engines: $e, identifiers: $i}'
 }
+# filters_text: one readable line of the active filters for the report header (empty = no filters).
 filters_text() {
     local -a p=()
     (( ${#ENGINES[@]} )) && p+=("engine=$(IFS=,; echo "${ENGINES[*]}")")
@@ -373,6 +423,64 @@ filters_text() {
     echo "$out"
 }
 
+# ---------------------------------------------------------------------------- compliance exceptions (shared by
+# rds-patch-compliance, rds-backup-compliance and rds-compliance-report; same file format in all three)
+# compliance_exceptions.conf, one entry per line:  account_id | identifier | scope | expires | reason
+#   all five required; scope patch, backup or patch,backup; expires YYYY-MM-DD (UTC, last valid day); # comments
+# Strict: any bad line stops the run (exit 1) naming file:line. Applied at report time only (saved data is unchanged).
+# exc_trim VAR_NAME: trim leading and trailing whitespace of the named variable in place.
+exc_trim() { local -n _v="$1"; _v="${_v#"${_v%%[![:space:]]*}"}"; _v="${_v%"${_v##*[![:space:]]}"}"; }
+# load_exceptions: read and strictly validate compliance_exceptions.conf (or --exceptions FILE).
+load_exceptions() {   # -> EXC_JSON: "null" (feature off: no file) or a JSON array of entries; EXC_PATH = the file used
+    local f="$EXC_FILE" line n=0 acct id scope exp reason s y m d dim k tsv=""
+    local -a sc=()
+    local -A seen=()
+    if [[ -z "$f" ]]; then f="$SCRIPT_DIR/compliance_exceptions.conf"; [[ -f "$f" ]] || return 0; fi
+    [[ -f "$f" && -r "$f" ]] || die 1 "Exceptions file not readable: $f"
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        n=$((n + 1)); line="${line%$'\r'}"
+        [[ "$line" =~ ^[[:space:]]*(#|$) ]] && continue
+        [[ "$line" == *'|'*'|'*'|'*'|'* ]] || die 1 "Exceptions $f:$n: expected 5 fields 'account_id | identifier | scope | expires | reason'"
+        IFS='|' read -r acct id scope exp reason <<<"$line"
+        exc_trim acct; exc_trim id; exc_trim scope; exc_trim exp; reason="${reason//[$'\001'-$'\037']/ }"; exc_trim reason
+        [[ -n "$acct" && -n "$id" && -n "$scope" && -n "$exp" && -n "$reason" ]] \
+            || die 1 "Exceptions $f:$n: missing field (all of account_id, identifier, scope, expires, reason are required)"
+        [[ "$acct" =~ ^[0-9]{12}$ ]] || die 1 "Exceptions $f:$n: account_id must be 12 digits (got '$acct')"
+        [[ "$id" =~ ^[A-Za-z][A-Za-z0-9-]{0,62}$ ]] \
+            || die 1 "Exceptions $f:$n: identifier '$id' is not a DB instance / cluster identifier (letters, digits, hyphens; no wildcards)"
+        scope="${scope,,}"; scope="${scope//[[:space:]]/}"; IFS=',' read -r -a sc <<<"$scope"
+        (( ${#sc[@]} )) || die 1 "Exceptions $f:$n: scope must be patch, backup or patch,backup"
+        k=""; for s in "${sc[@]}"; do
+            [[ "$s" == patch || "$s" == backup ]] || die 1 "Exceptions $f:$n: scope must be patch, backup or patch,backup (got '$scope')"
+            [[ ",$k," == *",$s,"* ]] && die 1 "Exceptions $f:$n: scope lists '$s' twice"
+            k+="${k:+,}$s"
+        done
+        scope="$k"
+        # expires must be a real calendar date: dim = days in that month (leap years included)
+        [[ "$exp" =~ ^([0-9]{4})-([0-9]{2})-([0-9]{2})$ ]] || die 1 "Exceptions $f:$n: expires must be a date YYYY-MM-DD (got '$exp'); an expiry date is mandatory"
+        y=$((10#${BASH_REMATCH[1]})); m=$((10#${BASH_REMATCH[2]})); d=$((10#${BASH_REMATCH[3]}))
+        case "$m" in 1|3|5|7|8|10|12) dim=31 ;; 4|6|9|11) dim=30 ;;
+            2) if (( (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 )); then dim=29; else dim=28; fi ;; *) dim=0 ;; esac
+        (( m >= 1 && m <= 12 && d >= 1 && d <= dim && y >= 2000 )) || die 1 "Exceptions $f:$n: expires '$exp' is not a valid date"
+        for s in "${sc[@]}"; do
+            # one entry per account + identifier (case-insensitive) + scope; a repeat stops the run
+            k="$acct|${id,,}|$s"
+            [[ -n "${seen[$k]:-}" ]] && die 1 "Exceptions $f:$n: duplicate entry for $acct $id ($s), already on line ${seen[$k]}"
+            seen[$k]=$n
+        done
+        tsv+="$n"$'\t'"$acct"$'\t'"$id"$'\t'"$scope"$'\t'"$exp"$'\t'"$reason"$'\n'
+    done <"$f"
+    EXC_PATH="$f"
+    EXC_JSON="$(printf '%s' "$tsv" | jq -Rcs 'split("\n") | map(select(. != "") | split("\t")
+        | {line: (.[0] | tonumber), account: .[1], identifier: .[2], scopes: (.[3] | split(",")), expires: .[4], reason: (.[5:] | join(" "))})' | tr -d '\r')" \
+        || die 1 "Exceptions $f: cannot convert the entries (jq)"
+    return 0
+}
+
+# ----------------------------------------------------------------------------
+# jq wrappers and line-ending helpers
+# ----------------------------------------------------------------------------
+# rjq MODE [jq args...]: run lib/compliance.jq in MODE (rows, finalize, text, csv, json, html, alert, ...).
 # compliance.jq needs every $variable defined in every mode
 rjq() {   # rjq <mode> [extra jq args...]
     local mode="$1"; shift
@@ -380,19 +488,38 @@ rjq() {   # rjq <mode> [extra jq args...]
         --argjson top_n "$TOP_N" --argjson nc_only "$( (( NC_ONLY )) && echo true || echo false)" \
         --argjson oracle_any "$( (( ORACLE_ANY_LINE )) && echo true || echo false)" \
         --argjson tagcols "$(json_array "${TAG_COLUMNS[@]}")" --argjson f "$FILTERS_JSON" \
-        --argjson acct_names "$(account_names_json)" "${PAGE_ARGS[@]}" -f "$LIB" "$@"
+        --argjson acct_names "$(account_names_json)" "${PAGE_ARGS[@]}" "${EXC_ARGS[@]}" -f "$LIB" "$@"
+}
+EXC_ARGS=()
+# exc_ready: hand the validated exceptions to jq (does nothing when the feature is off).
+exc_ready() {   # write the validated entries next to the work files once; jq reads them as $ARGS.named.exc
+    [[ "$EXC_JSON" != null && -n "$WORK" ]] || return 0
+    printf '%s' "$EXC_JSON" >"$WORK/exceptions.json"; EXC_ARGS=(--slurpfile exc "$WORK/exceptions.json")
+}
+# exc_log: log what the exceptions did in this report.
+exc_log() {   # exc_log <report.json>: one summary line + a warning per entry that matched no server / has expired
+    [[ "$EXC_JSON" != null ]] || return 0
+    local l
+    while IFS= read -r l; do [[ -n "$l" ]] && log_warn "$l"; done < <(jq -r --arg f "${EXC_PATH##*/}" '.summary.exceptions as $e
+        | ($e.unmatched[] | "Exception \($f):\(.line) (\(.account) \(.identifier)) matched no server in this report"),
+          (.rows[] | select(.exception == "expired") | "Exception for \(.account_id) \(.identifier) expired on \(.exception_expires): evaluated normally (\(.compliance_status))")' "$1" | tr -d '\r')
+    log_info "$(jq -r '.summary.exceptions as $e | "Exceptions (patch): \($e.applied) applied (counted as COMPLIANT), \($e.attention) expiring soon or no longer needed, \($e.expired) expired, \($e.unmatched | length) unmatched"' "$1" | tr -d '\r')"
 }
 PAGE_ARGS=()
+# account_names_json: config account names -> JSON object {"123456789012": "name"}.
 account_names_json() {   # config names as a JSON object (they win over IAM aliases and saved names)
     local k; { for k in "${!ACCOUNT_NAMES[@]}"; do printf '%s\t%s\n' "$k" "${ACCOUNT_NAMES[$k]}"; done; } \
         | jq -Rcs 'split("\n") | map(select(. != "") | split("\t") | {key: .[0], value: (.[1:] | join(" "))}) | from_entries'
 }
+# unix_eol: stdin filter; strips CR when jq writes CRLF (JQ_CRLF=1), else passes the text through.
 unix_eol() { if (( JQ_CRLF )); then tr -d '\r'; else cat; fi; }   # jq.exe (Windows) writes CRLF: keep HTML/JSON/text LF-only
+# detect_jq_eol: set JQ_CRLF=1 when this jq writes CRLF line ends (jq.exe in Git Bash).
 detect_jq_eol() { if [[ "$(jq -jn '"x\n"' | wc -c | tr -d ' \r')" != 2 ]]; then JQ_CRLF=1; log_debug "jq writes CRLF line ends; adapting"; fi; }
 
 # ----------------------------------------------------------------------------
 # AWS access (read-only)
 # ----------------------------------------------------------------------------
+# aws_base PROFILE REGION: build AWS_CMD (JSON output, no pager, timeouts, optional --profile / --region).
 aws_base() {   # aws_base <profile> <region>
     AWS_CMD=(aws --output json --no-cli-pager --cli-connect-timeout "$AWS_TIMEOUT" --cli-read-timeout "$AWS_TIMEOUT")
     [[ -n "$1" ]] && AWS_CMD+=(--profile "$1")
@@ -401,6 +528,8 @@ aws_base() {   # aws_base <profile> <region>
 }
 LAST_ERR=""
 AWS_SOFT=0
+# aws_call: run ONE read-only AWS CLI call; JSON goes to OUTFILE, stderr to OUTFILE.err. On failure returns 1 with
+# LAST_ERR set. Counts AWS_CALLS / AWS_FAILS (with AWS_SOFT=1 a failure is the caller's warning, not an error).
 aws_call() {   # aws_call <outfile> <profile> <region> <service> <operation> [args...]
     local out="$1" profile="$2" region="$3"; shift 3
     local rc=0
@@ -419,11 +548,16 @@ aws_call() {   # aws_call <outfile> <profile> <region> <service> <operation> [ar
     log_error "[${profile:-default}/$region] 'aws $1 $2' failed (rc=$rc): $LAST_ERR"
     return 1
 }
+# add_error: append one AWS error to errors.jsonl (listed in the report and counted as an error).
 add_error() {   # add_error <account> <profile> <region> <call> <message>
     jq -cn --arg a "$1" --arg p "${2:-default}" --arg r "$3" --arg c "$4" --arg m "$5" \
         '{account: $a, profile: $p, region: $r, call: $c, message: $m}' >>"$WORK/errors.jsonl"
 }
 
+# ----------------------------------------------------------------------------
+# Pre-checks
+# ----------------------------------------------------------------------------
+# precheck: before a scan, require AWS CLI v2, jq 1.6+ and the lib files (exit 2 otherwise).
 precheck() {
     command -v aws >/dev/null 2>&1 || die 2 "AWS CLI not found in PATH (install AWS CLI v2)"
     local v; v="$(aws --version 2>&1 || true)"
@@ -434,12 +568,17 @@ precheck() {
     [[ -r "$LIB" ]] || die 2 "Library missing: $LIB"
     [[ -r "$PAGE_JS" ]] || die 2 "Library missing: $PAGE_JS"
 }
+# precheck_jq: --merge only needs jq 1.6+ and the lib files (no AWS CLI).
 precheck_jq() {
     local v; v="$(jq --version 2>/dev/null | tr -d '\r' || true)"
     [[ "$v" =~ ^jq-1\.([6-9]|[1-9][0-9]) ]] || die 2 "jq 1.6 or newer required (found ${v:-none}); in Git Bash put jq.exe on PATH"
     local x; for x in "$LIB" "$MERGE_LIB" "$PAGE_JS"; do [[ -r "$x" ]] || die 2 "Library missing: $x"; done
 }
 
+# ----------------------------------------------------------------------------
+# Collection (per region): databases, upgrade targets, pending maintenance
+# ----------------------------------------------------------------------------
+# default_region PROFILE: AWS_REGION / AWS_DEFAULT_REGION, else the profile's configured region (empty if none).
 default_region() {   # default_region <profile>
     local r="${AWS_REGION:-${AWS_DEFAULT_REGION:-}}"
     if [[ -z "$r" ]]; then
@@ -459,6 +598,7 @@ engine_wanted() {
     done
     shopt -u nocasematch; return 1
 }
+# svc_of ENGINE: the AWS CLI service for the engine (docdb, neptune, everything else rds).
 svc_of() { case "$1" in docdb) echo docdb ;; neptune) echo neptune ;; *) echo rds ;; esac; }
 
 # Valid upgrade targets from RDS metadata ONLY: one describe-db-engine-versions --engine E --engine-version V per
@@ -473,6 +613,7 @@ collect_versions() {   # collect_versions <profile> <region> <dir>
         svc="$(svc_of "$engine")"
         key="$(printf '%s_%s' "$engine" "$ver" | tr -c 'A-Za-z0-9._-' '_')"
         cache="$WORK/ev/$region/ev_$key.json"
+        # one lookup per engine + version + region; later profiles reuse the cached answer
         if [[ ! -s "$cache" ]]; then
             AWS_SOFT=1
             if aws_call "$cache.raw" "$profile" "$region" "$svc" describe-db-engine-versions --engine "$engine" --engine-version "$ver"; then
@@ -509,6 +650,7 @@ collect_versions() {   # collect_versions <profile> <region> <dir>
             fi
             AWS_SOFT=0
         fi
+        # (loop input below: distinct in-scope engine + version pairs of this region's instances and clusters, after -e)
         [[ -s "$lc" ]] && lcs+=("$lc")
     done < <(jq -r -s '[.[0][], .[1][]] | map(select((.Engine // "") != "" and (.EngineVersion // "") != "") | [.Engine, .EngineVersion]) | unique[]
                        | select(.[0] | test("^(aurora-postgresql|aurora-mysql|postgres|mysql|mariadb|sqlserver-(ee|se|ex|web)|oracle-(ee|se2|ee-cdb|se2-cdb)|docdb|neptune)$")) | @tsv' \
@@ -517,6 +659,8 @@ collect_versions() {   # collect_versions <profile> <region> <dir>
     if (( ${#lcs[@]} )); then jq -cs 'map(select(has("key"))) | from_entries' -- "${lcs[@]}" >"$d/lc.json"; else printf '{}' >"$d/lc.json"; fi
 }
 
+# collect_region PROFILE ACCOUNT REGION DIR: describe clusters, instances and pending maintenance in one region,
+# look up the upgrade targets, then build that region's report rows (DIR/rows.json, compliance.jq mode rows).
 collect_region() {   # collect_region <profile> <account> <region> <dir>
     local profile="$1" account="$2" region="$3" d="$4"
     mkdir -p "$d"
@@ -546,10 +690,14 @@ collect_region() {   # collect_region <profile> <account> <region> <dir>
     log_info "[${profile:-default}/$region] $(jq -r 'group_by(.compliance_status) | map("\(.[0].compliance_status)=\(length)") | join(" ") | if . == "" then "no matching servers" else . end' "$d/rows.json")"
 }
 
+# ----------------------------------------------------------------------------
+# Region discovery (-A)
+# ----------------------------------------------------------------------------
 # Region discovery (-A): two read-only, one-page calls per region tell whether it has any DB instance / cluster.
 # --no-paginate + --max-records 20 = exactly one API call each; --query length(...) prints a number.
 PROBE_ARGS_I=(rds describe-db-instances --max-records 20 --query 'length(DBInstances)' --no-paginate)
 PROBE_ARGS_C=(rds describe-db-clusters --max-records 20 --query 'length(DBClusters)' --no-paginate)
+# probe_region: count DB instances and clusters in one region (discovery for -A); never fails, errors go to the file.
 probe_region() {   # probe_region <profile> <region> <outfile>   (runs in a background subshell: results go to the file)
     local profile="$1" region="$2" out="$3" kind n rc ni="" nc="" ei="" ec="" e
     local -a args
@@ -574,6 +722,7 @@ probe_region() {   # probe_region <profile> <region> <outfile>   (runs in a back
         && mv -f -- "$out.tmp" "$out"
     return 0
 }
+# discover_regions: probe every region as a background job, at most PROBE_PARALLEL at a time, then log probe errors.
 discover_regions() {   # discover_regions <profile> <account> <dir> <region...>  -> $dir/probe/<region>.json
     local profile="$1" account="$2" dir="$3" region running=0 f c m
     shift 3
@@ -582,6 +731,7 @@ discover_regions() {   # discover_regions <profile> <account> <dir> <region...> 
     for region in "$@"; do
         probe_region "$profile" "$region" "$dir/probe/$region.json" &
         running=$(( running + 1 ))
+        # throttle: with PROBE_PARALLEL probes running, wait for any one to finish (wait -n) before starting the next
         if (( running >= PROBE_PARALLEL )); then wait -n || true; running=$(( running - 1 )); fi
     done
     wait || true
@@ -599,6 +749,7 @@ discover_regions() {   # discover_regions <profile> <account> <dir> <region...> 
         done < <(jq -r '.errors[] | [.call, .message] | @tsv' "$f")
     done
 }
+# region_status: record how a region was handled (scanned | databases | empty | probe-error) for the region breakdown.
 region_status() {   # region_status <account> <profile> <region> <status> [probe-json-file]
     local probe='{}'
     [[ -n "${5:-}" && -s "${5:-}" ]] && probe="$(jq -c '{probe_instances: .instances, probe_clusters: .clusters}' "$5")"
@@ -606,6 +757,11 @@ region_status() {   # region_status <account> <profile> <region> <status> [probe
         '{account: $a, profile: $p, region: $r, status: $s} + $x' >>"$WORK/region_status.jsonl"
 }
 
+# ----------------------------------------------------------------------------
+# Per profile (account): identity, account name, regions, scan
+# ----------------------------------------------------------------------------
+# collect_profile INDEX PROFILE: resolve the account (sts) and its name (config, else IAM alias), pick the regions,
+# scan each one (regions the probe found empty are skipped), then look up Aurora global databases. 1 = profile unusable.
 collect_profile() {   # collect_profile <index> <profile>
     local idx="$1" profile="$2" account region base
     local -a regions=()
@@ -684,6 +840,8 @@ collect_globals() {   # collect_globals <index> <profile> <account> <region>
 # ----------------------------------------------------------------------------
 # Report assembly, output, alerts
 # ----------------------------------------------------------------------------
+# build_report: combine every region's rows, the errors and the run metadata into one report, then finalize it
+# (filters, exceptions, sort, summary) with compliance.jq mode finalize -> $REPORT.
 build_report() {
     local -a rowfiles=()
     mapfile -t rowfiles < <(find "$WORK" -name rows.json -type f | sort)
@@ -712,9 +870,15 @@ build_report() {
     REPORT="$WORK/report.json"
     jq -n --slurpfile meta "$WORK/meta.json" --slurpfile rows "$WORK/all_rows.json" --slurpfile errors "$WORK/all_errors.json" \
         '{meta: $meta[0], rows: $rows[0], errors: $errors[0]}' >"$WORK/raw_report.json" || die 4 "Assembling the report failed"
+    exc_ready
     rjq finalize "$WORK/raw_report.json" >"$REPORT" || die 4 "Finalizing the report failed"
+    exc_log "$REPORT"
 }
 
+# ----------------------------------------------------------------------------
+# Outputs
+# ----------------------------------------------------------------------------
+# render FORMAT: print the finalized report in one format (json, text, csv, html) via compliance.jq.
 render() {   # render <format>  -> stdout
     case "$1" in
         json) rjq json "$REPORT" | unix_eol ;;
@@ -724,12 +888,15 @@ render() {   # render <format>  -> stdout
     esac
 }
 
+# place TMP FILE: copy TMP to FILE atomically (temp name + mv), chmod 0640, remember it in WRITTEN.
 place() {   # place <tmp> <file>   atomic copy into the output dir
     if ! { cp -- "$1" "$2.tmp.$$" && mv -f -- "$2.tmp.$$" "$2"; }; then die 4 "Cannot write $2"; fi
     chmod 0640 -- "$2" 2>/dev/null || true
     WRITTEN+=("$(cd -- "$(dirname -- "$2")" && pwd -P)/${2##*/}")
     log_info "Wrote ${WRITTEN[-1]}"
 }
+# write_outputs: render each -F format; to stdout without -o, else to <prefix>[_<account>]_<stamp>.<ext>
+# (csv also writes <...>_regions.csv). -o NAME.html names the file instead.
 write_outputs() {
     local fmt ext stamp tmp base acct
     stamp="${STAMP:-$(date -d "@$NOW" '+%Y%m%d_%H%M%S')}"
@@ -751,6 +918,10 @@ write_outputs() {
     done
 }
 
+# ----------------------------------------------------------------------------
+# Alerts (optional)
+# ----------------------------------------------------------------------------
+# send_email_alert: send the text body with mail / mailx, else sendmail (60 s timeout when available).
 send_email_alert() {   # send_email_alert <subject> <body-file>   (body is streamed from the file)
     local subject="$1" bodyfile="$2" mailer="" to
     local -a tmo=()
@@ -769,6 +940,7 @@ send_email_alert() {   # send_email_alert <subject> <body-file>   (body is strea
           printf 'To: %s\nSubject: %s\nContent-Type: text/plain; charset=UTF-8\n\n' "$to" "$subject"; cat -- "$bodyfile"; } | "${tmo[@]}" "$mailer" -t -oi
     fi
 }
+# send_webhook_alert: POST the JSON payload with curl; the URL is passed on stdin (-K -), so it never shows in ps.
 send_webhook_alert() {   # send_webhook_alert <url> <payload-file>
     local url="$1" payload="$2" out
     command -v curl >/dev/null 2>&1 || { log_warn "Alert: curl not installed; webhook skipped"; return 1; }
@@ -777,6 +949,8 @@ send_webhook_alert() {   # send_webhook_alert <url> <payload-file>
         || { log_warn "Alert: webhook $(redact_url "$url") failed: ${out%%$'\n'*}"; return 1; }
     log_info "Alert: webhook $(redact_url "$url") -> HTTP $out"
 }
+# send_alerts RC [test]: build the alert (text body + Slack or JSON payload) and send it to every e-mail / webhook.
+# With --alert-on noncompliant it only fires when NON-COMPLIANT servers or AWS errors were found.
 send_alerts() {   # send_alerts <rc> [test]
     local rc="$1" mode="${2:-}" subject url status
     (( ${#ALERT_EMAILS[@]} + ${#ALERT_WEBHOOKS[@]} )) || return 0
@@ -808,6 +982,10 @@ send_alerts() {   # send_alerts <rc> [test]
     return 0
 }
 
+# ----------------------------------------------------------------------------
+# Dry run
+# ----------------------------------------------------------------------------
+# dry_run_plan: print the exact read-only AWS commands a real run would issue; no AWS calls.
 dry_run_plan() {
     local p r
     echo "$SCRIPT_NAME v$SCRIPT_VERSION dry run - no AWS calls are made"
@@ -842,6 +1020,10 @@ dry_run_plan() {
     done
 }
 
+# ----------------------------------------------------------------------------
+# Exit and signal traps
+# ----------------------------------------------------------------------------
+# on_exit (EXIT trap): stop probe jobs still running, remove the work dir (kept with --keep-workdir), keep the exit code.
 # shellcheck disable=SC2317,SC2329  # invoked via trap
 on_exit() {
     local rc=$?
@@ -852,17 +1034,20 @@ on_exit() {
     fi
     exit "$rc"
 }
+# on_signal (INT / TERM trap): log and exit 130.
 # shellcheck disable=SC2317,SC2329
 on_signal() { log_error "Interrupted"; exit 130; }
 
 # ----------------------------------------------------------------------------
 # --save-data (collection side) and --merge (offline, Git Bash friendly: no aws, no GNU date -d)
 # ----------------------------------------------------------------------------
+# save_data: write the --save-data JSON (schema rds_patch_compliance_data v1) that --merge reads later.
 save_data() {   # raw, unfiltered-by-display data: one file per account by default, or all accounts in FILE
     local off abbr utc day a f
     off="$(TZ="$DISPLAY_TZ" date -d "@$NOW" '+%z')"; abbr="$(TZ="$DISPLAY_TZ" date -d "@$NOW" '+%Z')"
     off=$(( (${off:0:1}1) * (10#${off:1:2} * 3600 + 10#${off:3:2} * 60) ))
     utc="$(date -u -d "@$NOW" '+%Y-%m-%dT%H:%M:%SZ')"; day="$(date -u -d "@$NOW" '+%Y%m%d')"
+    # save_one FILE ACCOUNT: write one data file; an empty ACCOUNT puts every account in the one file.
     save_one() {   # save_one <file> <account-or-empty>
         jq --arg schema "$DATA_SCHEMA" --argjson sv "$DATA_SCHEMA_VERSION" --arg version "$SCRIPT_VERSION" \
            --argjson now "$NOW" --arg utc "$utc" --arg tz "$DISPLAY_TZ" --arg abbr "$abbr" --argjson off "$off" --arg acct "$2" '
@@ -890,6 +1075,7 @@ save_data() {   # raw, unfiltered-by-display data: one file per account by defau
         save_one "$f" "$a"
     done < <(jq -r '.meta.accounts[].account' "$WORK/raw_report.json" | tr -d '\r')
 }
+# win_path PATH: accept Windows paths in Git Bash.
 win_path() {   # C:\x\y, C:/x/y -> /c/x/y when that exists (Git Bash / MSYS); otherwise unchanged
     local p="${1//\\//}" root="${RDS_PCR_DRIVE_ROOT:-/}"
     if [[ ! -e "$p" && "$p" =~ ^/([A-Za-z])/(.*)$ && "$root" != / ]] && ! compgen -G "$p" >/dev/null; then
@@ -905,7 +1091,9 @@ win_path() {   # C:\x\y, C:/x/y -> /c/x/y when that exists (Git Bash / MSYS); ot
     fi
     printf '%s' "$p"
 }
+# is_data_file FILE: true when FILE is a JSON object with schema rds_patch_compliance_data.
 is_data_file() { [[ "$(jq -r --arg s "$DATA_SCHEMA" 'if type == "object" and .schema == $s then "y" else "n" end' -- "$1" 2>/dev/null | tr -d '\r')" == y ]]; }
+# merge_files: build the --merge input list (exit 3 when a file, glob or directory gives nothing).
 merge_files() {   # expand --merge arguments (files, globs, directories) into MERGE_FILES
     local a p x; local -a hits
     MERGE_FILES=()
@@ -924,6 +1112,7 @@ merge_files() {   # expand --merge arguments (files, globs, directories) into ME
         else die 3 "File not found: $a"; fi
     done
 }
+# check_data_file FILE: reject HTML reports, -F json reports, old / newer schemas and broken files with a clear reason.
 check_data_file() {   # schema 1 from --save-data, or die 3 with the reason
     local f="$1" st
     [[ -r "$f" && -f "$f" ]] || die 3 "Cannot read $f"
@@ -946,6 +1135,11 @@ check_data_file() {   # schema 1 from --save-data, or die 3 with the reason
                       else die 3 "$f uses newer data schema ${st#v} (this script reads $DATA_SCHEMA_VERSION); update rds_patch_compliance_report.sh"; fi ;;
     esac
 }
+# ----------------------------------------------------------------------------
+# --merge main path
+# ----------------------------------------------------------------------------
+# merge_main: offline --merge. Check the files, combine them with lib/merge.jq (per account the newest collection wins),
+# rebuild the metadata, finalize with compliance.jq and write the outputs. Zero AWS calls; always exits here.
 merge_main() {
     precheck_jq
     detect_jq_eol
@@ -987,7 +1181,9 @@ merge_main() {
          rows: .rows, errors: .errors}' "$WORK/merged.json" | tr -d '\r' >"$WORK/raw_report.json" || die 4 "Assembling the merged report failed"
     # identifier / engine filters (-e / -i) apply to merged rows too
     REPORT="$WORK/report.json"
+    exc_ready
     rjq finalize "$WORK/raw_report.json" | tr -d '\r' >"$REPORT" || die 4 "Finalizing the merged report failed"
+    exc_log "$REPORT"
     write_outputs
     local rc=0 nc; nc="$(jq -r '.summary.non_compliant' "$REPORT" | tr -d '\r')"
     (( FAIL_ON_NC && nc > 0 )) && rc=5
@@ -995,6 +1191,11 @@ merge_main() {
     exit "$rc"
 }
 
+# ----------------------------------------------------------------------------
+# main
+# ----------------------------------------------------------------------------
+# main: parse and validate the options, then run one of: --merge, --alert-test, --dry-run, or a scan of every profile
+# (collect, build report, write outputs, --save-data, alerts). Exit 5 with --fail-on-noncompliant when NON-COMPLIANT found.
 main() {
     trap on_exit EXIT
     trap on_signal INT TERM

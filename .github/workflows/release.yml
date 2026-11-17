@@ -27,7 +27,7 @@ jobs:
           D=dist/rds-patch-compliance; mkdir -p "$D"
           # runtime only: no docs/, samples/, tests/, .github/
           for f in rds_patch_compliance_report.sh rds_patch_compliance_summary.sh lib README.md \
-                   rds_patch_compliance_report.conf.example EXAMPLES.md LICENSE; do
+                   rds_patch_compliance_report.conf.example compliance_exceptions.conf.example EXAMPLES.md LICENSE; do
             [ -e "$f" ] && cp -a "$f" "$D/"
           done
           chmod +x "$D"/*.sh

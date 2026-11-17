@@ -18,20 +18,26 @@ def ora_recount($any):
     | .excluded_targets = ([(.excluded_targets // [])[] | select(.reason | test("different patch line") | not)] + [ $d[] | select(.x) | {version: .v, reason: .x} ])
     | (if .default_auto_upgrade_target != null and ($newer | index([$row.default_auto_upgrade_target])) == null then .default_auto_upgrade_target = null else . end)
   else . end;
+# ---- main. $F = every input {i, label, d}. $ALL = one entry per (file, account). $G groups $ALL by account,
+# oldest collection first (same time: file order), so the LAST of each group is the copy that is used.
 . as $F
+  # utc: epoch -> "YYYY-MM-DD HH:MM UTC"
 | def utc: strftime("%Y-%m-%d %H:%M UTC");
   [ $F[] | . as $f | $f.d.accounts[]
     | {account, profile, name: (.name // ""), collected_epoch: (.collected_epoch // $f.d.collected_epoch), i: $f.i, label: $f.label} ] as $ALL
 | ($ALL | group_by(.account) | map(sort_by(.collected_epoch, .i))) as $G
 | ([ $G[] | last | {key: "\(.account)|\(.i)", value: true} ] | from_entries) as $USE
 | ([ $ALL[].account ] | unique) as $KNOWN
+  # used($f): true when this account's data comes from file $f (the newest copy of that account)
 | def used($f): (. as $a | $USE["\($a)|\($f.i)"]) // false;
   ([ $G[] | last ]) as $KEEP
 | ([ $F[] | . as $f | $f.d.rows[] | select(.account_id | used($f)) ]) as $rows
+# --max-behind: the CLI value, else the largest saved in any file. Oracle any-patch-line: CLI, else on when any file used it.
 | ($mb // ([ $F[].d.settings.max_behind // 2 ] | max)) as $M
 | ($oal // any($F[]; .d.settings.oracle_any_patch_line // false)) as $OAL
 | {
     accounts: [ $KEEP[] | {account, profile, name, collected_epoch, collected_utc: (.collected_epoch | utc), source: .label} ],
+    # status is re-evaluated with the merged --max-behind (Oracle recounted first); UNKNOWN rows stay UNKNOWN
     rows: [ $rows[] | ora_recount($OAL) | if .versions_behind == null or .compliance_status == "UNKNOWN" then .
                       else .compliance_status = (if .versions_behind > $M then "NON-COMPLIANT" else "COMPLIANT" end) end ],
     region_status: [ $F[] | . as $f | ($f.d.region_status // [])[] | select(.account | used($f)) ],
@@ -42,6 +48,7 @@ def ora_recount($any):
                        else ($f.d.accounts[] | select(.account | used($f))
                              | {account, profile, region: "", status: "unknown", count: 0,
                                 message: "data file saved by v\($f.d.script_version // "?") without global database data"}) end ],
+    # errors of the used accounts, plus errors with no known account (e.g. a profile whose credentials failed)
     errors: ([ $F[] | . as $f | ($f.d.errors // [])[] | select((.account | used($f)) or ((.account as $a | $KNOWN | index([$a])) == null)) ]
              | unique_by([.account, .profile, .region, .call, .message])),
     regions: ([ $rows[].region ] + [ $F[] | . as $f | ($f.d.region_status // [])[] | select(.account | used($f)) | .region ] | unique),

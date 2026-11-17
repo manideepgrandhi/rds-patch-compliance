@@ -3,38 +3,48 @@
 # lib/compliance.jq + lib/versions.jq, so the numbers are identical). Modes ($mode): text | html | csv_nc | csv_summary | csv_regions | csv_accounts | alert
 # A --merge report (meta.merge) adds the merged input files; per-account rows come from summary.accounts.
 include "versions" {search: "./"};
+# h: HTML-escape any value; dash: "-" for null / empty.
 def h: tostring | @html;
 def dash: if . == null or . == "" then "-" else tostring end;
+# pad($n) / rpad($n): left / right align text to $n characters.
 def pad($n): tostring | if length >= $n then . else . + (" " * ($n - length)) end;
 def rpad($n): tostring | if length >= $n then . else (" " * ($n - length)) + . end;
 # members of one Aurora global database are listed together (primary first), ordered by the group's worst member
 def gkey: if (.global_cluster // "") != "" then "\(.account_id)|\(.global_cluster)" else "\(.account_id)|\(.region)|\(.identifier)" end;
+# gtxt: "<global db> (<role>)" for a global database member, "unknown", or empty.
 def gtxt: if (.global_cluster // "") != "" then "\(.global_cluster) (\(.global_role))" elif .global_role == "unknown" then "unknown" else "" end;
+# nc_rows: NON-COMPLIANT rows, global database groups together, most versions behind first.
 def nc_rows: [.rows[] | select(.compliance_status == "NON-COMPLIANT")]
              | (reduce .[] as $x ({}; .[$x | gkey] = ([.[$x | gkey] // 0, ($x.versions_behind // 0)] | max))) as $gm
              | sort_by([-($gm[gkey]), gkey, (if .global_role == "primary" then 0 else 1 end), -(.versions_behind // 0), (.identifier | ascii_downcase), .account_id, .region]);
+# unk_rows: UNKNOWN rows sorted by identifier; why: the reason a row is UNKNOWN.
 def unk_rows: [.rows[] | select(.compliance_status == "UNKNOWN")] | sort_by([(.identifier | ascii_downcase), .account_id, .region]);
 def why: if .deprecated_version then "current version not returned by RDS (deprecated / not offered in region)"
          else (.note | split("; ")[0] | if . == "" then "lookup failed" else . end) end;
+# rule($s): the compliance rule sentence; accts: "account (profile), ...".
 def rule($s): "NON-COMPLIANT when the current version is more than \($s.max_behind) valid minor versions behind the latest (\($s.max_behind + 1) or more); counted from RDS ValidUpgradeTarget (same major; Oracle: same patch line)";
 def accts: .meta.accounts | map("\(.account) (\(.profile))") | join(", ");
 # region-wise breakdown (summary.regions / regions_total / region_overview, built by compliance.jq finalize).
 # Rows (txt / html / csv_regions) are only regions with databases or an AWS error; empty regions are only counted.
 # Region NAMES are never listed in the header (only "Regions: N checked, ..."); JSON from the report keeps everything.
 def ro: .summary.region_overview // {checked: (.meta.regions | length), with_databases: 0, empty: 0, error: 0, empty_regions: [], mode: "explicit"};
+# multi: more than one account; region_line: "N checked, ..."; merged: a --merge report.
 def multi: (.meta.accounts | length) > 1;
 def region_line: "\(.checked) checked, \(.with_databases) with databases, \(.empty) empty, \(.error) error\(if .error == 1 then "" else "s" end)"
   + ({"discover": " (discovery probe)", "full": " (all scanned in full, --no-discover)", "explicit": "", "merge": " (merged from saved data)"}[.mode] // "");
 def merged: .meta.merge != null;
+# acct_rows: per-account summary rows; src_state: how a merged input file was used; merge_line: merge info line.
 def acct_rows: .summary.accounts // [];
 def src_state: if (.used | length) > 0 and (.superseded | length) == 0 then "used"
                elif (.used | length) == 0 then "superseded (newer data used)" else "partly used" end;
 def merge_line: "\(.meta.merge.files) file(s), offline (0 AWS calls); days counted from \(.meta.generated_utc)";
+# shown_regions: regions with databases or errors; pct_txt / pctc: % as text / CSS class; latest_txt: latest minor.
 def shown_regions: [.summary.regions // [] | .[] | select(.status != "empty")];
 def pct_txt: if . == null then "-" else "\(.)%" end;
 def pctc: if . == null then "" elif . >= 100 then "ok" elif . >= 80 then "warn" else "bad" end;
 def latest_txt: (.latest_minor // "-") | gsub("; "; " | ");
 
+# text (mode text): the plain-text summary.
 def text:
   . as $r | $r.summary as $s | nc_rows as $nc | unk_rows as $uk
   | ($s.engines | map(.engine | length) | max // 6 | [., 6] | max + 2) as $ew
@@ -83,7 +93,9 @@ def text:
       "",
       "Read-only summary; full per-server details: rds_patch_compliance_report.sh" ] | join("\n");
 
+# card: one summary card of the HTML page.
 def card($l; $v; $cls; $sub): "<div class=\"card \($cls)\"><div class=\"v\">\($v | h)</div><div class=\"l\">\($l | h)</div><div class=\"s\">\($sub | h)</div></div>";
+# html (mode html): the self-contained offline HTML summary.
 def html:
   . as $r | $r.summary as $s | nc_rows as $nc | unk_rows as $uk
   | "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\"><title>RDS patch compliance summary - \($r.meta.generated_utc | h)</title><style>"
@@ -133,9 +145,11 @@ def html:
   + "var m=parseFloat(p),n=parseFloat(q);var r=(!isNaN(m)&&!isNaN(n)&&/^-?[0-9.]+%?$/.test(p)&&/^-?[0-9.]+%?$/.test(q))?m-n:p.localeCompare(q);return asc?r:-r;});"
   + "rs.forEach(function(r){b.appendChild(r);});});});});})();</script><footer>rds_patch_compliance_summary.sh v\($ARGS.named.version // "" | h) &middot; read-only; numbers from rds_patch_compliance_report.sh v\($r.meta.version | h)</footer></body></html>";
 
+# csv_nc: NON-COMPLIANT servers CSV.
 def csv_nc:
   (["account_id","profile","region","engine","identifier","resource_type","major_version","current_version","latest_minor_version","versions_behind","support_flag","auto_minor_upgrade","pending_actions_count","global_cluster","global_role"] | @csv),
   (nc_rows[] | [.account_id, .profile, .region, .engine, .identifier, .resource_type, .major_version, .current_version, .latest_minor_version, .versions_behind, .support_flag, .auto_minor_upgrade, .pending_actions_count, .global_cluster, .global_role] | @csv);
+# csv_summary: the headline numbers and flags as metric rows.
 def csv_summary:
   .summary as $s
   | (["scope","engine","major","total","compliant","non_compliant","unknown","pct_compliant","latest_minor"] | @csv),
@@ -146,18 +160,22 @@ def csv_summary:
     (["flag","nearing_end_of_support_\($s.warn_days)d","",$s.nearing_end_of_support,"","","","",""] | @csv),
     (["flag","auto_minor_upgrade_off","",$s.auto_minor_off,"","","","",""] | @csv),
     (["flag","pending_maintenance","",$s.with_pending,"","","","",""] | @csv);
+# csv_regions: region breakdown CSV (with an ALL row).
 def csv_regions:
   (["account_id","profile","region","status","total","compliant","non_compliant","unknown","pct_compliant","servers_with_pending_maintenance","pending_actions","aws_errors"] | @csv),
   (shown_regions + [.summary.regions_total // empty] | .[]
    | [.account_id, .profile, .region, .status, .total, .compliant, .non_compliant, .unknown, (.pct_compliant // ""), .with_pending, .pending_total, .errors] | @csv);
+# csv_accounts: one row per account.
 def csv_accounts:
   (["account_id","profile","collected_utc","source_file","regions_with_databases","total","compliant","non_compliant","unknown","pct_compliant","servers_with_pending_maintenance","past_standard_support","aws_errors"] | @csv),
   (acct_rows[] | [.account_id, .profile, .collected_utc, (.source // ""), .regions_with_databases, .total, .compliant, .non_compliant, .unknown, (.pct_compliant // ""), .with_pending, .past_standard_support, .errors] | @csv);
+# alert: compact JSON payload for webhooks.
 def alert: {summary: (.summary | {total, compliant, non_compliant, unknown, pct_compliant, max_behind, errors}),
             regions: (ro | {checked, with_databases, empty, error}),
             accounts: [acct_rows[] | {account_id, profile, total, compliant, non_compliant, unknown, pct_compliant}],
             merged_files: (.meta.merge.files // null),
             non_compliant: [nc_rows[] | {account_id, region, engine, identifier, current_version, latest_minor_version, versions_behind, support_flag, global_cluster, global_role}]};
 
+# main: dispatch on $mode
 if $mode == "text" then text elif $mode == "html" then html elif $mode == "csv_nc" then csv_nc
 elif $mode == "csv_summary" then csv_summary elif $mode == "csv_accounts" then csv_accounts elif $mode == "csv_regions" then csv_regions elif $mode == "alert" then alert else . end
