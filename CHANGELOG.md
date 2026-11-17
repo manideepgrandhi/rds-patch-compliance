@@ -3,6 +3,15 @@
 Plain-English features for each published release. The What's new page is built from this file.
 Only GitHub releases are listed here (older README history before v1.3.1 is not a published release zip).
 
+## 1.6.0
+- Compliance exceptions (`--exceptions FILE` / `compliance_exceptions.conf`) applied at report and merge time; `--save-data` is unchanged
+- An unexpired exception turns NON-COMPLIANT into COMPLIANT (EXCEPTION) and counts as compliant; the evaluated status is kept in `actual_status`
+- UNKNOWN stays UNKNOWN even with an exception (the exception is still listed against the server)
+- Expiring soon / no longer needed / expired flags; HTML Exception column, Exceptions quick filter and Compliant card pop-up; CSV and JSON get 5 columns at the end; text gets an EXCEPTIONS section
+- With no exceptions file the outputs are unchanged
+- Summary script is 1.6.0 and gains `--exceptions FILE`, passed through to the full report (including with `--merge`)
+- README documents `--exceptions` and `--tz` in the options table, and `rds:DescribeGlobalClusters` in the IAM policy
+
 ## 1.5.1
 - Global / Standalone checkboxes replace the Global cluster dropdown (Aurora only)
 - Collapsible Global databases section with a mismatch count and amber badge
