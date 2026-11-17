@@ -6,6 +6,7 @@ A **read-only** patch compliance report for AWS databases. For every Aurora clus
 ./rds_patch_compliance_report.sh -P prod,nonprod -r us-east-1,ap-south-1 -F csv,html,txt -o ~/compliance
 ```
 
+For a walk-through of what happens when you run the script, a flow diagram, and the use of every file and function, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Get it (AWS CloudShell)
 
