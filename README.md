@@ -1,5 +1,7 @@
 # rds_patch_compliance_report.sh
 
+Release history: [What's new](https://manideepgrandhi.github.io/rds-patch-compliance/) · also in [CHANGELOG.md](CHANGELOG.md).
+
 A **read-only** patch compliance report for AWS databases. For every Aurora cluster, RDS instance, Multi-AZ DB cluster, DocumentDB cluster and Neptune cluster it shows how many **minor versions** the database is behind, and marks it **COMPLIANT** or **NON-COMPLIANT**. Versions behind are the **valid minor upgrade targets RDS returns for the current version** (v1.1.0). It also flags majors past (or near) the end of standard support (Extended Support charges), auto minor upgrade switched off, pending maintenance and deprecated versions. It works across several accounts (profiles) and regions. Output formats are text, CSV, JSON and a single-file HTML report.
 
 ```
