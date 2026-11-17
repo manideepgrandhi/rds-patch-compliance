@@ -649,8 +649,10 @@ mg exc_base 0 --merge "$SD1" -F json -o "$EX/base"
 mg exc_on 0 --merge "$SD1" --exceptions "$EX/ok.conf" -F json,csv,text,html -o "$EX/on"
 EJ="$(ls "$EX"/on/*.json)"; BJ="$(ls "$EX"/base/*.json)"
 chk "exc: base fixture 19 = 11 compliant + 7 non-compliant + 1 unknown" jq -e '.summary | .total == 19 and .compliant == 11 and .non_compliant == 7 and .unknown == 1' "$BJ"
-chk "exc: counts -> compliant 14 (incl. 4), non-compliant 5, unknown 0, 73.7%" jq -e '.summary | .compliant == 14 and .non_compliant == 5 and .unknown == 0 and .pct_compliant == 73.7 and .exceptions.applied == 4' "$EJ"
-chk "exc: actual status kept" jq -e '[.rows[] | select(.exception == "yes") | [.identifier, .compliance_status, .actual_status]] | sort == [["billing-pg","COMPLIANT","COMPLIANT"],["inv-mysql","COMPLIANT","NON-COMPLIANT"],["legacy-aurora-pg12","COMPLIANT","NON-COMPLIANT"],["old-aurora-pg11","COMPLIANT","UNKNOWN"]]' "$EJ"
+chk "exc: counts -> compliant 13 (incl. 3), non-compliant 5, unknown 1, 68.4%" jq -e '.summary | .compliant == 13 and .non_compliant == 5 and .unknown == 1 and .pct_compliant == 68.4 and .exceptions.applied == 3' "$EJ"
+chk "exc: actual status kept; UNKNOWN stays UNKNOWN" jq -e '[.rows[] | select(.exception == "yes") | [.identifier, .compliance_status, .actual_status]] | sort == [["billing-pg","COMPLIANT","COMPLIANT"],["inv-mysql","COMPLIANT","NON-COMPLIANT"],["legacy-aurora-pg12","COMPLIANT","NON-COMPLIANT"],["old-aurora-pg11","UNKNOWN","UNKNOWN"]]' "$EJ"
+chk "exc: UNKNOWN with matching exception stays UNKNOWN (fields listed)" jq -e '.rows[] | select(.identifier == "old-aurora-pg11") | .compliance_status == "UNKNOWN" and .actual_status == "UNKNOWN" and .exception == "yes" and .exception_flag == "expiring soon" and .exception_expires == "2026-10-03"' "$EJ"
+chk "exc: NON-COMPLIANT still becomes exception" jq -e '.rows[] | select(.identifier == "legacy-aurora-pg12") | .compliance_status == "COMPLIANT" and .actual_status == "NON-COMPLIANT" and .exception == "yes"' "$EJ"
 chk "exc: flags (expiring soon incl. expires today, no longer needed)" jq -e '([.rows[] | select(.exception != "no") | {(.identifier): .exception_flag}] | add) == {"legacy-aurora-pg12": "", "inv-mysql": "expiring soon", "billing-pg": "no longer needed", "hr-sql": "exception expired", "old-aurora-pg11": "expiring soon"}' "$EJ"
 chk "exc: expired entry evaluated normally" jq -e '.rows[] | select(.identifier == "hr-sql") | .exception == "expired" and .compliance_status == "NON-COMPLIANT"' "$EJ"
 chk "exc: summary attention 3, expired 1, unmatched ghost-db line 8, backup-only entry not counted" jq -e '.summary.exceptions | .attention == 3 and .expiring_soon == 2 and .no_longer_needed == 1 and .expired == 1 and .unmatched == [{line: 8, account: "111111111111", identifier: "ghost-db"}] and .entries == 6' "$EJ"
@@ -658,14 +660,15 @@ chk "exc: other rows unchanged vs no-file run" bash -c "diff <(jq -S '[.rows[] |
 chk "exc: no-file JSON has no exception fields" jq -e '(.summary | has("exceptions") | not) and all(.rows[]; has("exception") | not)' "$BJ"
 has exc_on err 'ok\.conf:8 \(111111111111 ghost-db\) matched no server'
 has exc_on err 'hr-sql expired on 2026-10-02'
-has exc_on err 'Exceptions \(patch\): 4 applied'
+has exc_on err 'Exceptions \(patch\): 3 applied'
 EC="$(ls "$EX"/on/rds_patch_compliance_*[0-9].csv)"
 chk "exc csv: 5 new columns at the end" bash -c "head -1 '$EC' | grep -q ',\"account_name\",\"exception\",\"exception_reason\",\"exception_expires\",\"exception_flag\",\"actual_status\"\$'"
-chk "exc csv: status COMPLIANT (EXCEPTION) on 4 rows" test "$(grep -c '"COMPLIANT (EXCEPTION)"' "$EC")" -eq 4
+chk "exc csv: status COMPLIANT (EXCEPTION) on 3 waived/listed-compliant rows" test "$(grep -c '"COMPLIANT (EXCEPTION)"' "$EC")" -eq 3
+chk "exc csv: UNKNOWN row keeps UNKNOWN and lists the exception" python3 -c 'import csv,sys; rows=list(csv.reader(open(sys.argv[1],newline=""))); h=rows[0]; i,s,e=h.index("identifier"),h.index("compliance_status"),h.index("exception"); r=[x for x in rows[1:] if x[i]=="old-aurora-pg11"]; raise SystemExit(0 if len(r)==1 and r[0][s]=="UNKNOWN" and r[0][e]=="yes" else 1)' "$EC"
 chk "exc csv: expired row" grep -q '"expired","Old waiver","2026-10-02","exception expired","NON-COMPLIANT"$' "$EC"
 chk "exc csv: reason formula guard" grep -q "\"'=Ends today\"" "$EC"
 ET="$(ls "$EX"/on/*.txt)"
-chk "exc text: summary + EXCEPTIONS section" bash -c "grep -q 'COMPLIANT 14 (incl. 4 exceptions)' '$ET' && grep -q '^EXCEPTIONS' '$ET' && grep -q 'line 8: 111111111111 ghost-db matched no server' '$ET' && grep -q '^  COMPLIANT\*' '$ET'"
+chk "exc text: summary + EXCEPTIONS section" bash -c "grep -q 'COMPLIANT 13 (incl. 3 exceptions)' '$ET' && grep -q '^EXCEPTIONS' '$ET' && grep -q 'line 8: 111111111111 ghost-db matched no server' '$ET' && grep -q '^  COMPLIANT\*' '$ET' && grep -q 'old-aurora-pg11' '$ET' && grep -q 'actual UNKNOWN' '$ET'"
 EH="$(ls "$EX"/on/*.html)"
 chk "exc html: Exception column, badge, quick filter, escaped reason" bash -c "grep -q '<th>Exception</th>' '$EH' && grep -q 'COMPLIANT (EXCEPTION)' '$EH' && grep -q 'id=\"f-exc\"' '$EH' && grep -q 'Freeze &lt;b&gt;q1&lt;/b&gt;' '$EH' && ! grep -q 'Freeze <b>' '$EH'"
 mg exc_nc 0 --merge "$SD1" --exceptions "$EX/ok.conf" -F json --non-compliant-only -o "$EX/nc"
@@ -697,7 +700,7 @@ PATH="$NOAWS:$PATH" RDS_PCR_NOW=1791000000 "$TC/rds_patch_compliance_report.sh" 
 chk "exc default: no file next to the script -> off" jq -e '.summary | has("exceptions") | not' "$EX"/def0/*.json
 cp "$EX/ok.conf" "$TC/compliance_exceptions.conf"
 PATH="$NOAWS:$PATH" RDS_PCR_NOW=1791000000 "$TC/rds_patch_compliance_report.sh" --merge "$SD1" -F json -o "$EX/def1" 2>"$EX/def1.err"
-chk "exc default: compliance_exceptions.conf next to the script is used" jq -e '.summary.exceptions.applied == 4' "$EX"/def1/*.json
+chk "exc default: compliance_exceptions.conf next to the script is used" jq -e '.summary.exceptions.applied == 3' "$EX"/def1/*.json
 printf 'exceptions = %s\n' "$EX/all.conf" >"$EX/c.conf"
 mg exc_conf 0 --config "$EX/c.conf" --merge "$SD1" -F json -o "$EX/conf"
 chk "exc: config key exceptions = FILE" jq -e '.summary.non_compliant == 0 and .summary.exceptions.applied == 7' "$EX"/conf/*.json

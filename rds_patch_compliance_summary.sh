@@ -18,7 +18,7 @@ set -Eeuo pipefail
 umask 077
 
 readonly SCRIPT_NAME="rds_patch_compliance_summary.sh"
-readonly SCRIPT_VERSION="1.3.0"
+readonly SCRIPT_VERSION="1.6.0"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly SCRIPT_DIR
 FULL="${RDS_PCS_FULL:-$SCRIPT_DIR/rds_patch_compliance_report.sh}"
@@ -36,6 +36,7 @@ PROFILES=(); REGIONS=(); ALL_REGIONS=0; NO_DISCOVER=0; PROBE_PARALLEL=""; ENGINE
 FORMATS=(); OUTPUT_DIR=""; PREFIX="rds_patch_compliance_summary"
 MAX_BEHIND=2; MAX_BEHIND_SET=0; WARN_DAYS=180; SAVE_DATA=0; SAVE_DATA_FILE=""; MERGE=0; MERGE_ARGS=(); ORACLE_ANY_LINE=0; FAIL_ON_NC=0; VERBOSE=0
 ALERT_EMAILS=(); ALERT_WEBHOOKS=(); ALERT_ON="noncompliant"; ALERT_WEBHOOK_FORMAT="slack"; ALERT_FROM=""
+EXC_FILE=""
 readonly SLACK_MAX_CHARS=35000
 WORK=""; WRITTEN=()
 
@@ -96,6 +97,10 @@ Usage: $SCRIPT_NAME [options]
                             0 AWS calls, jq only; the newer collection wins per account; days recomputed now.
                             -P / -r / -A / --no-discover / --probe-parallel / -e / -i / --save-data do not apply.
       --fail-on-noncompliant  Exit 5 when any NON-COMPLIANT server is found
+      --exceptions FILE     Pass through to the full report (v1.6.0): compliance exceptions file.
+                            A listed NON-COMPLIANT server (scope patch) shows COMPLIANT (EXCEPTION) and counts
+                            as compliant until the expiry date. UNKNOWN stays UNKNOWN; the exception is still listed.
+                            Default (in the full report): compliance_exceptions.conf next to the scripts, if present.
       --alert-email ADDR    E-mail the text summary (mail/mailx/sendmail)        [repeatable]
       --alert-webhook URL   POST the summary to a webhook (curl)                 [repeatable]
       --alert-webhook-format F  slack | json (default slack)
@@ -135,6 +140,7 @@ parse_args() {
             -o|--output-dir)    need_arg "$opt" $#; OUTPUT_DIR="$2"; shift 2 ;;
             --prefix)           need_arg "$opt" $#; PREFIX="$2"; shift 2 ;;
             --fail-on-noncompliant) FAIL_ON_NC=1; shift ;;
+            --exceptions)       need_arg "$opt" $#; EXC_FILE="$2"; shift 2 ;;
             --alert-email)      need_arg "$opt" $#; add_list ALERT_EMAILS "$2"; shift 2 ;;
             --alert-webhook)    need_arg "$opt" $#; add_list ALERT_WEBHOOKS "$2"; shift 2 ;;
             --alert-webhook-format) need_arg "$opt" $#; ALERT_WEBHOOK_FORMAT="$2"; shift 2 ;;
@@ -182,6 +188,10 @@ validate() {
         [[ "$SAVE_DATA_FILE" == *.json ]] || die 1 "--save-data FILE must end in .json"
         [[ "$SAVE_DATA_FILE" == /* ]] || SAVE_DATA_FILE="$PWD/$SAVE_DATA_FILE"
     fi
+    # resolve before collect() may cd (e.g. default --save-data into -o DIR)
+    if [[ -n "$EXC_FILE" ]]; then
+        [[ "$EXC_FILE" == /* ]] || EXC_FILE="$PWD/$EXC_FILE"
+    fi
     command -v jq >/dev/null 2>&1 || die 2 "jq not found in PATH"
     [[ -x "$FULL" ]] || die 2 "Full report script not found or not executable: $FULL"
     [[ -r "$LIB" && -r "$SCRIPT_DIR/lib/versions.jq" ]] || die 2 "lib/summary.jq or lib/versions.jq missing next to $SCRIPT_NAME"
@@ -201,6 +211,7 @@ collect() {
         (( MAX_BEHIND_SET )) && a+=(--max-behind "$MAX_BEHIND")
         (( ORACLE_ANY_LINE )) && a+=(--oracle-any-patch-line)
         (( VERBOSE )) && a+=(-v)
+        [[ -n "$EXC_FILE" ]] && a+=(--exceptions "$EXC_FILE")
         REPORT="$WORK/report.json"
         "$FULL" "${a[@]}" >"$REPORT" || rc=$?
         (( rc == 0 )) || die "$rc" "Merge failed (rds_patch_compliance_report.sh --merge exit $rc)"
@@ -217,6 +228,7 @@ collect() {
     [[ -n "$PROBE_PARALLEL" ]] && a+=(--probe-parallel "$PROBE_PARALLEL")
     (( ORACLE_ANY_LINE )) && a+=(--oracle-any-patch-line)
     (( VERBOSE )) && a+=(-v)
+    [[ -n "$EXC_FILE" ]] && a+=(--exceptions "$EXC_FILE")
     if (( SAVE_DATA )); then
         # the full report writes the data file(s); default names go to -o DIR (or the current folder)
         if [[ -n "$SAVE_DATA_FILE" ]]; then a+=(--save-data "$SAVE_DATA_FILE")

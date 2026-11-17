@@ -27,7 +27,7 @@ Output formats are text, CSV, JSON and a single-file HTML report. Several format
 
 `rds_patch_compliance_summary.sh` does not scan AWS itself. It runs `rds_patch_compliance_report.sh -F json` (or `--merge ... -F json`) and keeps that finalized JSON. All counting, including exceptions if they were applied by the full report, comes from there. `lib/summary.jq` only renders a short picture: totals, the NON-COMPLIANT list, UNKNOWN reasons, and optional txt / html / csv outputs plus alerts.
 
-It has no `--exceptions` option of its own (that flag is unknown to it). If `compliance_exceptions.conf` sits next to the scripts, the full report still loads it automatically when the summary script calls it. A custom exceptions path can only be passed to the full report. The summary script still reports its own version as **1.3.0**.
+It accepts `--exceptions FILE` (v1.6.0) and passes it through to the full report, including with `--merge`. If you do not pass the flag and `compliance_exceptions.conf` sits next to the scripts, the full report still loads it automatically when the summary script calls it. The summary script reports its own version as **1.6.0**.
 
 ---
 
@@ -376,7 +376,7 @@ Grouped in the order a run uses them. Nested helpers are marked.
 |---|---|
 | `_log`, `log_info`, `log_warn`, `die` | Timestamped stderr logging and fatal exit. No `--log-file` of its own. |
 | `need_arg`, `add_list`, `redact_url` | Same helpers as the full report. |
-| `usage` / `parse_args` / `validate` | Options and checks. There is no `--exceptions`, `--config` or `--log-file`. |
+| `usage` / `parse_args` / `validate` | Options and checks, including `--exceptions FILE` (passed through to the full report). There is no `--config` or `--log-file`. |
 | `collect` | Run the full report (`-F json`, or `--merge ... -F json`) and keep its JSON as `$REPORT`. |
 | `detect_jq_eol`, `unix_eol`, `jqr` | LF-only jq output. |
 | `render` | Render `$REPORT` with `lib/summary.jq`. |
@@ -447,7 +447,9 @@ The file allows only one entry per account + identifier + scope; a duplicate sto
 `exc_apply` in `lib/compliance.jq` runs in `finalize`, after dates are refreshed and before anything is counted:
 
 - `actual_status` is always the evaluated status (COMPLIANT, NON-COMPLIANT or UNKNOWN).
-- If a matching entry is **still valid** (expires today or later, UTC): `exception` is `yes`, `compliance_status` is set to **COMPLIANT**, and the row is shown as **COMPLIANT (EXCEPTION)**. It counts as compliant in every total, percentage, `--non-compliant-only`, alert and `--fail-on-noncompliant` exit.
+- If a matching entry is **still valid** (expires today or later, UTC) and the evaluated status is **NON-COMPLIANT**: `exception` is `yes`, `compliance_status` is set to **COMPLIANT**, and the row is shown as **COMPLIANT (EXCEPTION)**. It counts as compliant in every total, percentage, `--non-compliant-only`, alert and `--fail-on-noncompliant` exit.
+- If a matching entry is still valid and the evaluated status is **UNKNOWN**: `exception` is `yes` and the exception fields are filled in, but `compliance_status` stays **UNKNOWN**. The row does not count as compliant.
+- If a matching entry is still valid and the evaluated status is already **COMPLIANT**: `exception` is `yes`, status stays COMPLIANT, and the row is shown as **COMPLIANT (EXCEPTION)**.
 - Flags on a valid exception: **expiring soon** when 14 days or fewer remain; **no longer needed** when `actual_status` was already COMPLIANT. Both can appear together.
 - If the entry has **expired** (`expires` is before today, UTC): `exception` is `expired`, `compliance_status` is left as evaluated, and the row is flagged **exception expired**. The log warns.
 - If no entry matches: `exception` is `no`.
@@ -465,7 +467,7 @@ Example (fake account and names):
 
 Some sibling reports keep a "No data" (or similar) status even when an exception matches. **This script does not have a "No data" status.** The only compliance statuses on a row are COMPLIANT, NON-COMPLIANT and UNKNOWN.
 
-If an unexpired exception matches an **UNKNOWN** row (lookup failed, or the current version is not returned), that row becomes COMPLIANT (EXCEPTION) and `actual_status` stays UNKNOWN. The exception is not ignored.
+If an unexpired exception matches an **UNKNOWN** row (lookup failed, or the current version is not returned), that row **stays UNKNOWN**. The exception is still listed against it (`exception` is `yes`, reason, expiry and flags are filled in), but the status and the summary counts do not change.
 
 The string `NOT SCANNED` appears only in the Global databases section, for a member that was listed by `describe-global-clusters` but whose region was not scanned. Those entries are not report rows, so `exc_apply` does not run on them.
 
@@ -473,6 +475,6 @@ The string `NOT SCANNED` appears only in the Global databases section, for a mem
 
 - Text: an EXCEPTIONS section; the summary can read `COMPLIANT N (incl. X exceptions)`.
 - HTML: an Exception column (reason, expiry, flag) and an Exceptions quick filter (all / exceptions only / non-exceptions / expiring soon or no longer needed / expired).
-- CSV: the status column shows `COMPLIANT (EXCEPTION)`; five columns are appended when the feature is on: `exception`, `exception_reason`, `exception_expires`, `exception_flag`, `actual_status`. Free-text reason fields get a formula-injection guard.
-- JSON: `compliance_status` stays the token `COMPLIANT`, with `"exception": "yes"` and the same five fields.
-- The summary script will show excepted servers as compliant if the full report applied exceptions when it produced the JSON.
+- CSV: the status column shows `COMPLIANT (EXCEPTION)` when a NON-COMPLIANT (or already-COMPLIANT) row has a valid exception; an UNKNOWN row with an exception still shows `UNKNOWN`. Five columns are appended when the feature is on: `exception`, `exception_reason`, `exception_expires`, `exception_flag`, `actual_status`. Free-text reason fields get a formula-injection guard.
+- JSON: a waived NON-COMPLIANT row has `compliance_status` `COMPLIANT` with `"exception": "yes"` and the same five fields. An UNKNOWN row keeps `compliance_status` `UNKNOWN` with `"exception": "yes"`.
+- The summary script will show excepted NON-COMPLIANT servers as compliant if the full report applied exceptions when it produced the JSON. UNKNOWN with an exception still appears under UNKNOWN. Pass `--exceptions FILE` to the summary script to send the path through to the full report.

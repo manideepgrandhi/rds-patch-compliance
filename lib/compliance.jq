@@ -157,8 +157,9 @@ def rows:
 
 # ------------------------------------------------------------------ compliance exceptions (v1.6.0)
 # $ARGS.named.exc = [null] or absent: feature off; [[entries]]: compliance_exceptions.conf entries (validated by the script).
-# An unexpired entry for the scope makes the server compliant (actual_status keeps the evaluated one); expires = last valid
-# UTC day; within 14 days -> "expiring soon"; actual already compliant -> "no longer needed"; past expiry -> normal status.
+# An unexpired entry for the scope turns NON-COMPLIANT into COMPLIANT (actual_status keeps the evaluated one).
+# UNKNOWN is left UNKNOWN; exception fields are still filled in. expires = last valid UTC day; within 14 days ->
+# "expiring soon"; actual already compliant -> "no longer needed"; past expiry -> normal status.
 # exc_list: the entries array, or null when the feature is off; exc_on: true when it is on.
 def exc_list: (($ARGS.named.exc // [null])[0]);
 def exc_on: exc_list != null;
@@ -182,18 +183,20 @@ def exc_unmatched($scope; $rows):
 # exc_counts($rows; $scope): summary.exceptions counts (entries, applied, attention, expired, unmatched...).
 def exc_counts($rows; $scope):
   {entries: ([ exc_list[]? | select((.scopes | index([$scope])) != null) ] | length),
-   applied: ([ $rows[] | select(.exception == "yes") ] | length),
+   applied: ([ $rows[] | select(.exception == "yes" and .compliance_status == "COMPLIANT") ] | length),
    attention: ([ $rows[] | select(.exception == "yes" and .exception_flag != "") ] | length),
    expiring_soon: ([ $rows[] | select(.exception == "yes" and (.exception_flag | contains("expiring soon"))) ] | length),
    no_longer_needed: ([ $rows[] | select(.exception == "yes" and (.exception_flag | contains("no longer needed"))) ] | length),
    expired: ([ $rows[] | select(.exception == "expired") ] | length),
    unmatched: exc_unmatched($scope; $rows)};
 # exc_apply: evaluate the patch exception for one row; actual_status keeps the real result.
-def exc_apply:   # patch scope; rows keep compliance_status = COMPLIANT so every count, %, alert and exit code includes them
+# Only NON-COMPLIANT is flipped to COMPLIANT (and then counted as compliant everywhere). UNKNOWN stays UNKNOWN.
+def exc_apply:
   exc_eval(exc_find("patch"; .account_id; .identifier); .compliance_status == "COMPLIANT") as $v
-  | . + $v + {actual_status: .compliance_status} | if $v.exception == "yes" then .compliance_status = "COMPLIANT" else . end;
-# exc_label: status text shown to people ("COMPLIANT (EXCEPTION)" for an applied exception).
-def exc_label: if .exception == "yes" then "COMPLIANT (EXCEPTION)" else .compliance_status end;
+  | . + $v + {actual_status: .compliance_status}
+  | if $v.exception == "yes" and .actual_status == "NON-COMPLIANT" then .compliance_status = "COMPLIANT" else . end;
+# exc_label: status text shown to people ("COMPLIANT (EXCEPTION)" when a NON-COMPLIANT row was waived, or a still-compliant one is listed).
+def exc_label: if .exception == "yes" and .compliance_status == "COMPLIANT" then "COMPLIANT (EXCEPTION)" else .compliance_status end;
 # exc_cols: extra CSV / page columns, only when exceptions are on.
 def exc_cols: if exc_on then ["exception","exception_reason","exception_expires","exception_flag","actual_status"] else [] end;
 
@@ -305,7 +308,7 @@ def finalize:
   (($ARGS.named.acct_names // {}) as $cn | .meta.accounts |= ((. // []) | map(. + {name: (if ($cn[.account] // "") != "" then $cn[.account] else (.name // "") end)})))
   | ([.meta.accounts[] | {key: .account, value: .name}] | from_entries) as $an
   | (.rows |= map(refresh_row | del(.upgrade_command) | . + {account_name: ($an[.account_id] // "")}))   # files saved before v1.4.0 carry upgrade_command
-  # exceptions are applied before anything is counted, so an excepted server counts as COMPLIANT everywhere
+  # exceptions are applied before anything is counted; a waived NON-COMPLIANT server counts as COMPLIANT everywhere
   | (if exc_on then .rows |= map(exc_apply) else . end)
   | annotate_globals
   | . as $r
@@ -413,7 +416,7 @@ def text:
       | "=== \($e.engine): \($e.total) (compliant \($e.compliant), non-compliant \($e.non_compliant), unknown \($e.unknown)) ===",
         "  " + ("STATUS" | pad(14)) + ("BEHIND" | rpad(6)) + "  " + ("IDENTIFIER" | pad(32)) + ("TYPE" | pad(17)) + ("CURRENT" | pad($vw)) + ("LATEST MINOR" | pad($vw)) + ("AUTO" | pad(7)) + ("PEND" | rpad(4)) + "  " + ("ACCOUNT" | pad(13)) + ("REGION" | pad(15)) + "FLAGS",
         ($r.rows[] | select(.engine == $e.engine)
-          | ("  " + ((if .exception == "yes" then "COMPLIANT*" else .compliance_status end) | pad(14)) + (.versions_behind | dash | rpad(6)) + "  " + (.identifier | pad(32)) + (.resource_type | pad(17)) + (.current_version | pad($vw)) + (.latest_minor_version | dash | pad($vw))
+          | ("  " + ((if .exception == "yes" and .compliance_status == "COMPLIANT" then "COMPLIANT*" else .compliance_status end) | pad(14)) + (.versions_behind | dash | rpad(6)) + "  " + (.identifier | pad(32)) + (.resource_type | pad(17)) + (.current_version | pad($vw)) + (.latest_minor_version | dash | pad($vw))
             + (.auto_minor_upgrade | pad(7)) + (.pending_actions_count | rpad(4)) + "  " + (.account_id | pad(13)) + (.region | pad(15))
             + ([ (if .support_flag != "ok" and (.support_flag | startswith("n/a") | not) then .support_flag else empty end), (if .deprecated_version then "current version not returned (deprecated?)" else empty end)] | join("; ") | dash)),
           (.pending_actions_detail[] | "      pending: " + .text + (if .auto_applied_after_ist then " [auto-apply \(.auto_applied_after_ist)]" else "" end))),
@@ -477,7 +480,7 @@ def gbadge: if .global_role == "unknown" then " <span class=\"gb unk\" title=\"d
 # html_row: one <tr> of the main HTML table.
 def html_row:
   . as $x
-  | "<tr data-i=\"\(._i)\"><td>" + (if .exception == "yes" then "<span class=\"st ok exc\" title=\"Exception until \(.exception_expires | h); actual status \(.actual_status | h)\">COMPLIANT (EXCEPTION)</span><div class=\"sub\">actual \(.actual_status | h)</div>"
+  | "<tr data-i=\"\(._i)\"><td>" + (if .exception == "yes" and .compliance_status == "COMPLIANT" then "<span class=\"st ok exc\" title=\"Exception until \(.exception_expires | h); actual status \(.actual_status | h)\">COMPLIANT (EXCEPTION)</span><div class=\"sub\">actual \(.actual_status | h)</div>"
        else "<span class=\"st \(.compliance_status | stc)\">\(.compliance_status | h)</span>" end) + "</td><td data-s=\"\(.versions_behind // -1 | h)\">\(.versions_behind | dash)</td>"
   + "<td><b>\(.identifier | h)</b>" + gbadge + (if .members != "" then "<div class=\"sub\">\(.members | h)</div>" else "" end) + "</td>"
   + "<td>\(.resource_type | h)</td><td>\(.major_version | h)</td><td class=\"mono\">\(.current_version | h)\(if .deprecated_version then " <span class=\"st bad\">DEPRECATED</span>" else "" end)</td><td class=\"mono\">\(.latest_minor_version | dash | h)</td>"
@@ -652,7 +655,7 @@ def html:
   + "<li><b>Regions:</b> \($ro | region_mode_txt | h). Empty regions are only counted; tables list regions with databases or an AWS error.</li>"
   + "<li><b>Pending maint.</b> = maintenance actions AWS has scheduled or offered for this server that haven't been applied yet (cluster rows include their member instances' actions); click the badge to expand, hover for IST dates.</li>"
   + "<li><b>Global databases</b> (Aurora): membership from describe-global-clusters (one call per account). Overall status = the worst member; <i>region status mismatch</i> = members on the same version but with a different status (valid targets differ per region). Automatic minor version upgrade does not apply to global database members.</li>"
-  + (if exc_on then "<li><b>Exceptions</b> (compliance_exceptions.conf, scope patch): a listed server shows COMPLIANT (EXCEPTION) and counts as compliant until its expiry date (last valid UTC day); <i>actual</i> is the evaluated status. Expired entries are evaluated normally; <i>expiring soon</i> = within 14 days; <i>no longer needed</i> = the server is compliant on its own.</li>" else "" end)
+  + (if exc_on then "<li><b>Exceptions</b> (compliance_exceptions.conf, scope patch): a listed NON-COMPLIANT server shows COMPLIANT (EXCEPTION) and counts as compliant until its expiry date (last valid UTC day); <i>actual</i> is the evaluated status. UNKNOWN stays UNKNOWN (the exception is still listed). Expired entries are evaluated normally; <i>expiring soon</i> = within 14 days; <i>no longer needed</i> = the server is compliant on its own.</li>" else "" end)
   + "<li>Read-only: nothing was changed.</li></ul></details>"
   + "<script type=\"application/json\" id=\"pc-data\">" + page_data($r) + "</script>"
   + "</main><footer>\($r.meta.script | h) v\($r.meta.version | h) &middot; read-only</footer>"

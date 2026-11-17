@@ -145,8 +145,9 @@ Compliance:
                             matching the RDS console Modify page. See README "Oracle versions".
       --fail-on-noncompliant  Exit 5 when any NON-COMPLIANT server is found (default: exit 0)
       --exceptions FILE     Compliance exceptions (v1.6.0): lines "account_id | identifier | scope | expires | reason";
-                            listed servers (scope patch) show COMPLIANT (EXCEPTION) and count as compliant until the
-                            expiry date. Default: compliance_exceptions.conf next to the script, if present (none = off).
+                            a listed NON-COMPLIANT server (scope patch) shows COMPLIANT (EXCEPTION) and counts as
+                            compliant until the expiry date. UNKNOWN stays UNKNOWN; the exception is still listed.
+                            Default: compliance_exceptions.conf next to the script, if present (none = off).
                             Any malformed line stops the run. See compliance_exceptions.conf.example
 
 Report:
