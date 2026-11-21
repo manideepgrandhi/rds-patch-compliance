@@ -3,7 +3,7 @@
 // Covers: tab switching (+ #pending link), nothing about maintenance left in tab 1, Aurora global members adjacent in
 // both tabs (primary first), Pending tab cards / every filter / search / Reset / empty state, soonest-first order,
 // red / amber dates, "N pending" -> tab 2 filtered to that server, server name -> its row in tab 1 (highlighted),
-// Export CSV from both tabs (visible rows only, one row per action), a 390px mobile width, no JS errors, no network.
+// Export CSV from both tabs (one shared layout, one row per server; tab 2 = servers with visible actions), a 390px mobile width, no JS errors, no network.
 const p = require('puppeteer-core');
 const path = require('path'), fs = require('fs'), os = require('os');
 const fails = [], r = {}; let nchk = 0; const ok = (c, m) => { nchk++; if (!c) fails.push(m); };
@@ -33,7 +33,7 @@ function parseCsv(t) {
   const pvis = () => g.evaluate(() => [...document.querySelectorAll('#p-tbl tbody tr[data-p]')].filter(t => t.style.display !== 'none').map(t => +t.dataset.p));
   const shown = id => g.evaluate(i => { const n = document.getElementById(i); return !!n && !n.hidden && n.offsetParent !== null; }, id);
   const sel = async (id, v) => { await g.select('#' + id, v); await sleep(30); };
-  const dlCsv = async btn => { fs.readdirSync(dl).forEach(f => fs.unlinkSync(path.join(dl, f))); await g.click(btn); let got = [];
+  const dlCsv = async btn => { fs.readdirSync(dl).forEach(f => fs.unlinkSync(path.join(dl, f))); await g.click(btn); await sleep(40); await g.click('#cpk [data-a="go"]'); let got = [];   // v1.7.0: both buttons open the column picker
     for (let i = 0; i < 50 && !(got = fs.readdirSync(dl).filter(f => f.endsWith('.csv'))).length; i++) await sleep(100);
     return got.length ? {name: got[0], rows: parseCsv(fs.readFileSync(path.join(dl, got[0]), 'utf8').replace(/^\ufeff/, ''))} : null; };
 
@@ -65,6 +65,11 @@ function parseCsv(t) {
   const c1 = await g.evaluate(() => window.__pcCsv());
   const c1r = parseCsv(c1.replace(/^\ufeff/, ''));
   ok(c1r.length - 1 === R.filter(x => x.compliance_status === 'NON-COMPLIANT').length && JSON.stringify(c1r[0]) === JSON.stringify(D.cols), 'tab 1 CSV: filtered rows, all columns via __pcCsv');
+  const UCOLS = ['account_id','account_name','profile','region','resource_type','identifier','members','engine','major_version','current_version','latest_minor_version','versions_behind','newer_versions',
+    'compliance_status','auto_minor_upgrade','standard_support_end','extended_support_end','support_flag','deprecated_version','global_cluster','global_role','maint_window_ist','pending_count','next_due','next_action','pending_actions'];
+  ok(JSON.stringify(D.cols.slice(0, 26)) === JSON.stringify(UCOLS), 'v1.7.0 shared CSV layout: the 26 columns in order');
+  const H = D.cols, col = (row, c) => row[H.indexOf(c)];
+  ok(c1r.slice(1).every(x => +col(x, 'pending_count') === R.find(y => y.identifier === col(x, 'identifier') && y.account_id === col(x, 'account_id') && y.region === col(x, 'region')).pending_actions_count), 'tab 1 CSV: pending_count = actions per server');
   await g.click('#f-reset'); await sleep(30);
 
   // --- switch to tab 2
@@ -115,12 +120,36 @@ function parseCsv(t) {
     ok((await pvis()).length === P.length && await g.evaluate(() => document.getElementById('p-q').value === '' && document.getElementById('p-due').value === ''), 'Clear filters');
     await sel('p-due', 'opt'); await g.type('#p-q', 'a'); await sleep(30); await g.click('#p-reset'); await sleep(30);
     ok((await pvis()).length === P.length && await g.evaluate(() => [...document.querySelectorAll('#p-filters select')].every(s => s.value === '') && document.getElementById('p-q').value === ''), 'Reset clears every filter');
-    // tab 2 CSV: visible rows, one per action
+    // tab 2 CSV (v1.7.0): same layout as tab 1, one row per server that has visible actions, in tab-2 order
     await sel('p-due', 'd30');
     if (shots) await g.screenshot({path: path.join(shots, 'tab2_filtered.png')});
+    const vis30 = await pvis(), srv30 = [...new Set(vis30.map(k => P[k].i))];
     const c2 = await dlCsv('#p-csv');
     ok(c2 && /^rds_pending_maintenance_.*_filtered\.csv$/.test(c2.name), 'tab 2 CSV downloaded: ' + (c2 && c2.name));
-    ok(c2 && c2.rows.length - 1 === n30 && c2.rows[0].includes('applies_to') && c2.rows[0].includes('auto_apply_ist') && c2.rows.slice(1).every(x => x.length === c2.rows[0].length), 'tab 2 CSV: one row per visible action (' + (c2 && c2.rows.length - 1) + ')');
+    ok(c2 && JSON.stringify(c2.rows[0]) === JSON.stringify(D.cols) && JSON.stringify(c2.rows[0]) === JSON.stringify(c1r[0]), 'tab 2 CSV: identical header to tab 1');
+    ok(c2 && c2.rows.length - 1 === srv30.length && c2.rows.slice(1).map(x => col(x, 'identifier')).join() === srv30.map(i => R[i].identifier).join(), 'tab 2 CSV: one row per server with visible actions, tab-2 order (' + (c2 && c2.rows.length - 1) + '/' + srv30.length + ')');
+    ok(c2 && c2.rows.slice(1).every(x => x.length === H.length && /^(\d{4}-\d{2}-\d{2} \((in \d+ days?|today|\d+ days? overdue)\))?$/.test(col(x, 'next_due'))), 'tab 2 CSV: next_due "YYYY-MM-DD (in N days)"');
+    await g.click('#p-reset'); await sleep(30);
+    // one server: tab 2 (via its "N pending" link) and tab 1 (search) give the same single row with compliance + every action
+    const [xs1, is1] = withP.reduce((a, b) => (b[0].pending_actions_count > a[0].pending_actions_count ? b : a));
+    await g.click('#tb-comp'); await sleep(30);
+    await g.evaluate(i => { const a = document.querySelector('a.pl[data-i="' + i + '"]'); a.closest('details').open = true; }, is1);
+    await g.click('a.pl[data-i="' + is1 + '"]'); await sleep(60);
+    const c3 = await dlCsv('#p-csv');
+    const acts = P.filter(q => q.i === is1);
+    const one = c3 && c3.rows[1], pa = one ? col(one, 'pending_actions') : '';
+    ok(c3 && c3.rows.length === 2 && col(one, 'identifier') === xs1.identifier && col(one, 'compliance_status') !== '' && col(one, 'current_version') === xs1.current_version, 'one-server tab 2 CSV: exactly one row with the compliance columns');
+    ok(one && +col(one, 'pending_count') === acts.length && pa.split('; ').length === acts.length && acts.every(q => pa.includes(q.action + ' on ' + q.applies + ', ') && (!q.description || pa.includes(' - ' + q.description))),
+      'one-server CSV: pending_count + every action with its full description: ' + pa.slice(0, 200));
+    ok(one && acts.every(q => q.auto_ist ? pa.includes('auto-apply ' + q.auto_ist) : q.forced_ist ? pa.includes('forced ' + q.forced_ist) : q.current_apply ? pa.includes('next window ' + q.current_apply) : pa.includes('optional (no date)')), 'one-server CSV: dates as auto-apply / forced IST, next window or optional');
+    const dated = acts.filter(q => q.days_until != null).sort((a, b) => a.days_until - b.days_until);
+    ok(one && (dated.length ? col(one, 'next_due').startsWith(dated[0].next_date + ' (') && col(one, 'next_action') === dated[0].action + ' on ' + dated[0].applies : col(one, 'next_due') === ''), 'one-server CSV: next_due / next_action = soonest action');
+    await g.click('#p-srv-x'); await sleep(30); await g.click('#tb-comp'); await sleep(30);
+    await g.click('#f-reset'); await sleep(30);
+    await g.$eval('#q', (e, v) => { e.value = v; e.dispatchEvent(new Event('input')); }, xs1.identifier); await sleep(40);
+    const t1one = parseCsv((await g.evaluate(() => window.__pcCsv())).replace(/^\ufeff/, '')).filter(x => col(x, 'identifier') === xs1.identifier && col(x, 'account_id') === xs1.account_id && col(x, 'region') === xs1.region);
+    ok(one && t1one.length === 1 && JSON.stringify(t1one[0]) === JSON.stringify(one), 'tab 1 and tab 2 give the identical row for the same server');
+    await g.click('#f-reset'); await sleep(30); await g.click('#tb-pend'); await sleep(30);
     await g.click('#p-reset'); await sleep(30);
     if (shots) await g.screenshot({path: path.join(shots, 'tab2_pending.png')});
     // cross-link tab 2 -> tab 1

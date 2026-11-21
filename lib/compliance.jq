@@ -641,13 +641,15 @@ def html_pending($r; $irows; $P):
 # page_data($r): JSON embedded in the page for lib/compliance_page.js (filters, totals, CSV export);
 # "<" and line separators are escaped so the JSON cannot close the <script> tag.
 def page_data($r):
-  {cols: (cols + ["next_maintenance","days_until_maintenance","global_cluster","global_role","account_name"] + exc_cols),
+  # v1.7.0: in-page Export CSV layout (both tabs, one row per server); the command-line CSV keeps `cols` + extras
+  {cols: (["account_id","account_name","profile","region","resource_type","identifier","members","engine","major_version","current_version",
+           "latest_minor_version","versions_behind","newer_versions","compliance_status","auto_minor_upgrade","standard_support_end","extended_support_end",
+           "support_flag","deprecated_version","global_cluster","global_role","maint_window_ist","pending_count","next_due","next_action","pending_actions"] + exc_cols),
    csv_acct: (if ($r.meta.accounts | length) == 1 then $r.meta.accounts[0].account else "" end), csv_stamp: ($r.meta.generated_utc | gsub("[^0-9]"; "") | .[0:12]),
    nc_only: $nc_only,
    accounts: [$r.meta.accounts[] | {account, profile, name: (.name // "")}],
    globals: [$r.summary.globals[] | {a: .account_id, g: .global_cluster}],
    engines: [$r.summary.engines[] | {engine, anchor, majors: [.majors[] | {major, latest_minor, standard_support_end, support_flag}]}],
-   cols_off: ["pending_actions_count","pending_actions","maint_window_utc","maint_window_ist","next_maintenance","days_until_maintenance"],   # v1.7.0: in the Pending maintenance tab
    pend: [pend_flat($r)[] | del(.on, .auto_days, .forced_days)],
    rows: [$r.rows[] | del(.pending_actions_detail, .excluded_targets, .version_warnings, .tags, .arn, .note, .global_arn, .global_pending_raw, .upgrade_command)]}
   + (if exc_on then {exc: true} else {} end)

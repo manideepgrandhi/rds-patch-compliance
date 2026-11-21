@@ -7,7 +7,8 @@ Only GitHub releases are listed here (older README history before v1.3.1 is not 
 - The HTML report has two tabs: **Patch compliance** and **Pending maintenance**. Each piece of information now appears once
 - Patch compliance no longer has the Pending card, the Pending column (badge you had to click), the maintenance window columns, the pending counts in the per account / per region tables, or the Pending option in Flag
 - Pending maintenance is one flat table, one row per action, soonest first: server, account, region, engine / version, action, applies to, auto-apply and forced dates in IST, maintenance window in IST, description. Overdue or within 7 days is red, within 30 days amber
-- Pending maintenance has cards (due within 7 days, within 30 days, optional), filters (account, region, engine, action, applies to, due, Global / Standalone), search, Reset and its own Export CSV (one row per action)
+- Pending maintenance has cards (due within 7 days, within 30 days, optional), filters (account, region, engine, action, applies to, due, Global / Standalone), search and Reset
+- Export CSV uses one layout on both tabs: one row per server with 26 columns, ending with `pending_count`, `next_due`, `next_action` and `pending_actions` (every action soonest first, with IST dates and the full description). Tab 1 saves the filtered servers; tab 2 saves the servers that have visible actions
 - Servers link between the tabs: **N pending** opens that server's actions; the server name in Pending maintenance jumps back to its row
 - Members of one Aurora global database sit together (primary first) in the HTML, text, CSV and JSON
 - Text report: no `pending:` line under each server; a PENDING MAINTENANCE section lists every action, soonest first
