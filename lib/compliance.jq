@@ -302,6 +302,13 @@ def global_summary:
          region_status_mismatch: ($sc | group_by(.current_version) | any(.[]; (map(.compliance_status) | unique | length) > 1)),
          pending: ([$g[].pending_actions_detail[] | select(.on | startswith("global ")) | .text] | unique)})
   | sort_by([(.overall_status | st_rank), .account_id, .global_cluster]);
+# group_globals (v1.7.0): keep the members of one Aurora global database next to each other (primary first, then the
+# secondaries by region) at the place of the group's first member in the existing sort; other rows keep their order.
+def group_globals:
+  to_entries
+  | map(.value + {_gk: (if (.value.global_cluster // "") != "" then "g|\(.value.account_id)|\(.value.global_cluster)" else "r|\(.key)" end), _gp: .key})
+  | group_by(._gk) | map({p: (map(._gp) | min), rows: sort_by([(if .global_role == "primary" then 0 else 1 end), .region, ._gp])})
+  | sort_by(.p) | [.[].rows[] | del(._gk, ._gp)];
 # finalize (mode finalize): apply account names, refresh dates, exceptions and global database info, filter
 # (--non-compliant-only), sort, and build the summary block used by every renderer.
 def finalize:
@@ -316,7 +323,7 @@ def finalize:
   | ($r | region_breakdown) as $regs
   # --non-compliant-only hides rows from the list; the summary ($all) still counts every row
   | ($r.rows | map(select(($nc_only | not) or .compliance_status == "NON-COMPLIANT"))
-             | sort_by([.engine, (.compliance_status | st_rank), -(.versions_behind // -1), (.identifier | ascii_downcase), .account_id, .region])) as $rows
+             | sort_by([.engine, (.compliance_status | st_rank), -(.versions_behind // -1), (.identifier | ascii_downcase), .account_id, .region]) | group_globals) as $rows
   | ($r.rows | counts) as $all
   | $r + {rows: $rows,
           summary: ($all + {
@@ -358,9 +365,6 @@ def rpad($n): tostring | if length >= $n then . else (" " * ($n - length)) + . e
 def short_list: if length == 0 then "-" elif length <= 4 then join(", ") else (.[:3] | join(", ")) + ", ... +\(length - 3) (latest \(.[-1]))" end;
 # pend_summary: one line of pending maintenance counts per action.
 def pend_summary: "on \(.with_pending) server(s): " + (.pending_by_action | to_entries | map("\(.key) \(.value)") | join(", ") | if . == "" then "none" else . end);
-# pend_tip: pending actions with auto-apply / forced dates (UTC = IST), for the HTML tooltip.
-def pend_tip: [ .pending_actions_detail[] | .text + (if .auto_applied_after_utc then " | auto-apply \(.auto_applied_after_utc) = \(.auto_applied_after_ist)" else "" end)
-                + (if .forced_apply_utc then " | forced \(.forced_apply_utc) = \(.forced_apply_ist)" else "" end) ] | join("\n");
 # region_mode_txt / region_line: how regions were chosen, and the "N checked, ..." line.
 def region_mode_txt: {"discover": "discovery probe, \(.probe_parallel) in parallel; full scan only where databases or a probe error",
                        "full": "every enabled region scanned in full (--no-discover)", "explicit": "queried directly, no probe", "merge": "merged offline from saved data"}[.mode] // .mode;
@@ -368,6 +372,34 @@ def region_line: "\(.checked) checked, \(.with_databases) with databases, \(.emp
 # Region NAMES are never listed in the report header; empty regions (no DB instance / cluster) are only counted.
 # Rows / CSV show regions with databases or an AWS error; JSON summary.regions keeps every region (incl. empty).
 def shown_regions: [.summary.regions[] | select(.status != "empty")];
+# pend_flat($r) (v1.7.0): one entry per pending maintenance action (cluster, member, instance and global actions) for the
+# Pending maintenance tab / section. i = index of the server in $r.rows. Soonest first (no date = optional, last);
+# the actions of one Aurora global database stay together (primary first), placed at the group's soonest date.
+# due: over (overdue) | d7 (0-7 days) | d30 (8-30 days) | later (> 30 days) | opt (no date).
+def pend_due: if . == null then "opt" elif . < 0 then "over" elif . <= 7 then "d7" elif . <= 30 then "d30" else "later" end;
+def pend_flat($r):
+  [ $r.rows | to_entries[] | .key as $i | .value as $x | ($x.pending_actions_detail // [])[]
+    # next date recomputed here: global database actions are added after refresh_row, old data files may lack it
+    | ([.current_apply, .auto_applied_after, .forced_apply] | map(select(. != null and . != "")) | min) as $nd
+    | {i: $i, action: (.action // ""), on: (.on // ""),
+       applies: (if .on == "cluster" then "cluster" elif (.on // "") == "" then "instance" else .on end),
+       description: (.description // ""), opt_in_status: (.opt_in_status // ""),
+       auto_utc: (.auto_applied_after_utc // null), auto_ist: (.auto_applied_after_ist // null),
+       forced_utc: (.forced_apply_utc // null), forced_ist: (.forced_apply_ist // null),
+       auto_days: days_from(.auto_applied_after // null), forced_days: days_from(.forced_apply // null),
+       current_apply: (.current_apply // null), next_date: $nd, days_until: days_from($nd),
+       _gk: (if ($x.global_cluster // "") != "" then "g|\($x.account_id)|\($x.global_cluster)" else null end),
+       _ro: (if $x.global_role == "primary" then 0 else 1 end), _rg: ($x.region // ""), _id: ($x.identifier | ascii_downcase)}
+    | . + {due: (.days_until | pend_due)} ]
+  | to_entries | map(.value + {_u: (.value._gk // "a|\(.key)")})
+  | group_by(._u)
+  | map({d: ([.[].days_until | select(. != null)] | min), rows: sort_by([._ro, ._rg, ._id, (if .days_until == null then 1 else 0 end), .days_until, .action])})
+  | sort_by([(if .d == null then 1 else 0 end), .d, .rows[0]._id])
+  | [.[].rows[] | del(._u, ._gk, ._ro, ._rg, ._id)];
+# applies_kind: cluster | member | instance | global (Applies to filter).
+def applies_kind: split(" ")[0];
+# dshort: days as short text for the text report ("6d overdue", "today", "in 12d", "optional").
+def dshort: if . == null then "optional" elif . < 0 then "\(-.)d overdue" elif . == 0 then "today" else "in \(.)d" end;
 # text (mode text): the plain-text report.
 def text:
   . as $r | $r.summary as $s | $s.region_overview as $ro | (($r.meta.accounts | length) > 1) as $multi
@@ -382,7 +414,7 @@ def text:
     "SUMMARY",
     "  Servers/clusters : \($s.total)   COMPLIANT \($s.compliant)\(if $s.exceptions then " (incl. \($s.exceptions.applied) exceptions)" else "" end)   NON-COMPLIANT \($s.non_compliant)   UNKNOWN \($s.unknown)   -> \($s.pct_compliant)% compliant",
     "  Support          : \($s.past_standard_support) past standard support (Extended Support charges), \($s.nearing_end_of_support) ending within \($s.warn_days) days",
-    "  Pending maint.   : " + (if $s.with_pending == 0 then "none" else ($s | pend_summary) + " (\($s.pending_total) action(s))" end),
+    "  Pending maint.   : " + (if $s.with_pending == 0 then "none" else ($s | pend_summary) + " (\($s.pending_total) action(s)) - see PENDING MAINTENANCE" end),
     "  Global databases : \($s.global_databases) (\($s.global_members) members)" + (if $s.global_unknown > 0 then "; \($s.global_unknown) Aurora cluster(s) with unknown membership" else "" end),
     "  Other flags      : auto minor upgrade off \($s.auto_minor_off), current version not returned / deprecated \($s.deprecated)",
     (if $s.errors > 0 then "  AWS errors       : \($s.errors) (see ERRORS at the end; affected regions may be missing)" else empty end),
@@ -399,29 +431,39 @@ def text:
     "",
     (if $s.global_databases > 0 then "GLOBAL DATABASES",
        ($s.globals[] | "  \(.global_cluster) [\(.engine)] account \(.account_id): \(.overall_status)" + (if .region_status_mismatch then "  ** region status mismatch **" else "" end) + (if .version_differs then "  (versions differ: \(.versions | join(", ")))" else "" end),
-         (.members[] | "      " + (.role | pad(10)) + (.region | pad(16)) + (.identifier | pad(32)) + (.current_version | dash | pad($vw)) + (.compliance_status) + (if .headless then " (headless)" else "" end) + (if .versions_behind != null then ", \(.versions_behind) behind" else "" end)),
-         (.pending[] | "      pending: " + .)), "" else empty end),
+         (.members[] | "      " + (.role | pad(10)) + (.region | pad(16)) + (.identifier | pad(32)) + (.current_version | dash | pad($vw)) + (.compliance_status) + (if .headless then " (headless)" else "" end) + (if .versions_behind != null then ", \(.versions_behind) behind" else "" end))), "" else empty end),
     "PER REGION",
-    "  " + ("ACCOUNT" | pad(14)) + ("REGION" | pad(16)) + ("STATUS" | pad(11)) + ("TOTAL" | rpad(6)) + ("COMPL" | rpad(7)) + ("NON-C" | rpad(7)) + ("UNKN" | rpad(6)) + ("%COMPL" | rpad(8)) + ("PEND" | rpad(6)) + ("PAST-STD" | rpad(10)),
+    "  " + ("ACCOUNT" | pad(14)) + ("REGION" | pad(16)) + ("STATUS" | pad(11)) + ("TOTAL" | rpad(6)) + ("COMPL" | rpad(7)) + ("NON-C" | rpad(7)) + ("UNKN" | rpad(6)) + ("%COMPL" | rpad(8)) + ("PAST-STD" | rpad(10)),
     (($r | shown_regions) + [$s.regions_total] | .[] | "  " + (.account_id | pad(14)) + (.region | pad(16)) + (.status | pad(11)) + (.total | rpad(6)) + (.compliant | rpad(7)) + (.non_compliant | rpad(7)) + (.unknown | rpad(6))
-       + ((if .pct_compliant == null then "-" else "\(.pct_compliant)%" end) | rpad(8)) + (.with_pending | rpad(6)) + (.past_standard_support | rpad(10))
+       + ((if .pct_compliant == null then "-" else "\(.pct_compliant)%" end) | rpad(8)) + (.past_standard_support | rpad(10))
        + (if .status == "error" then "  see ERRORS" + (if .total == 0 then " (no data)" else " (partial)" end) else "" end)),
     "",
     "PER ACCOUNT",
-    "  " + ("ACCOUNT" | pad(14)) + ("PROFILE" | pad(16)) + ("COLLECTED" | pad(22)) + ("REG" | rpad(4)) + ("TOTAL" | rpad(6)) + ("COMPL" | rpad(7)) + ("NON-C" | rpad(7)) + ("UNKN" | rpad(6)) + ("%COMPL" | rpad(8)) + ("PEND" | rpad(6)) + "  NAME",
+    "  " + ("ACCOUNT" | pad(14)) + ("PROFILE" | pad(16)) + ("COLLECTED" | pad(22)) + ("REG" | rpad(4)) + ("TOTAL" | rpad(6)) + ("COMPL" | rpad(7)) + ("NON-C" | rpad(7)) + ("UNKN" | rpad(6)) + ("%COMPL" | rpad(8)) + "  NAME",
     ($s.accounts[] | "  " + (.account_id | pad(14)) + (.profile | pad(16)) + (.collected_utc | pad(22)) + (.regions_with_databases | rpad(4)) + (.total | rpad(6)) + (.compliant | rpad(7)) + (.non_compliant | rpad(7)) + (.unknown | rpad(6))
-       + ((if .pct_compliant == null then "-" else "\(.pct_compliant)%" end) | rpad(8)) + (.with_pending | rpad(6)) + "  " + (.account_name // "" | dash)),
+       + ((if .pct_compliant == null then "-" else "\(.pct_compliant)%" end) | rpad(8)) + "  " + (.account_name // "" | dash)),
     "",
     ($s.engines[] | . as $e
       | "=== \($e.engine): \($e.total) (compliant \($e.compliant), non-compliant \($e.non_compliant), unknown \($e.unknown)) ===",
-        "  " + ("STATUS" | pad(14)) + ("BEHIND" | rpad(6)) + "  " + ("IDENTIFIER" | pad(32)) + ("TYPE" | pad(17)) + ("CURRENT" | pad($vw)) + ("LATEST MINOR" | pad($vw)) + ("AUTO" | pad(7)) + ("PEND" | rpad(4)) + "  " + ("ACCOUNT" | pad(13)) + ("REGION" | pad(15)) + "FLAGS",
+        "  " + ("STATUS" | pad(14)) + ("BEHIND" | rpad(6)) + "  " + ("IDENTIFIER" | pad(32)) + ("TYPE" | pad(17)) + ("CURRENT" | pad($vw)) + ("LATEST MINOR" | pad($vw)) + ("AUTO" | pad(7)) + ("ACCOUNT" | pad(13)) + ("REGION" | pad(15)) + "FLAGS",
         ($r.rows[] | select(.engine == $e.engine)
           | ("  " + ((if .exception == "yes" and .compliance_status == "COMPLIANT" then "COMPLIANT*" else .compliance_status end) | pad(14)) + (.versions_behind | dash | rpad(6)) + "  " + (.identifier | pad(32)) + (.resource_type | pad(17)) + (.current_version | pad($vw)) + (.latest_minor_version | dash | pad($vw))
-            + (.auto_minor_upgrade | pad(7)) + (.pending_actions_count | rpad(4)) + "  " + (.account_id | pad(13)) + (.region | pad(15))
-            + ([ (if .support_flag != "ok" and (.support_flag | startswith("n/a") | not) then .support_flag else empty end), (if .deprecated_version then "current version not returned (deprecated?)" else empty end)] | join("; ") | dash)),
-          (.pending_actions_detail[] | "      pending: " + .text + (if .auto_applied_after_ist then " [auto-apply \(.auto_applied_after_ist)]" else "" end))),
+            + (.auto_minor_upgrade | pad(7)) + (.account_id | pad(13)) + (.region | pad(15))
+            + ([ (if .support_flag != "ok" and (.support_flag | startswith("n/a") | not) then .support_flag else empty end), (if .deprecated_version then "current version not returned (deprecated?)" else empty end)]
+               + (if (.global_cluster // "") != "" then ["global \(.global_cluster) (\(.global_role))"] else [] end) | join("; ") | dash))),
         ""),
     (if ($r.rows | length) == 0 then "No servers matched.", "" else empty end),
+    # v1.7.0: every pending maintenance action in one list, soonest first (was a "pending:" line under each server)
+    (pend_flat($r) as $P
+     | "PENDING MAINTENANCE (\($P | length) action(s) on \([$P[].i] | unique | length) server(s); soonest first; dates in IST)",
+       (if ($P | length) == 0 then "  none" else
+          "  " + ("DUE" | pad(26)) + ("ACTION" | pad(16)) + ("APPLIES TO" | pad(26)) + ("IDENTIFIER" | pad(32)) + ("ACCOUNT" | pad(13)) + ("REGION" | pad(15))
+            + ("AUTO-APPLY (IST)" | pad(24)) + ("FORCED (IST)" | pad(22)) + ("WINDOW (IST)" | pad(24)) + "DESCRIPTION",
+          ($P[] | . as $p | $r.rows[$p.i] as $x
+            | "  " + (((.next_date // "-") + " " + (.days_until | dshort)) | pad(26)) + (.action | pad(16)) + (.applies | pad(26)) + ($x.identifier | pad(32))
+              + ($x.account_id | pad(13)) + ($x.region | pad(15)) + ((.auto_ist // (if .current_apply then "next window \(.current_apply)" else null end)) | dash | pad(24)) + (.forced_ist | dash | pad(22)) + ($x.maint_window_ist | dash | pad(24))
+              + ([ (if .opt_in_status != "" then "opt-in: \(.opt_in_status)" else empty end), (if .description != "" then .description else empty end) ] | join(" - ") | dash))
+        end), ""),
     (if ($r.errors | length) > 0 then "ERRORS", ($r.errors[] | "  \(.account) \(.profile)/\(.region): \(.call): \(.message)"), "" else empty end),
     (if $s.exceptions then "EXCEPTIONS (* = COMPLIANT by exception; actual = evaluated status)",
        ([ $r.rows[] | select(.exception != "no") ] | if length == 0 then "  none of the shown servers is listed" else .[]
@@ -432,7 +474,7 @@ def text:
     "  Rule    : COMPLIANT = at most \($s.max_behind) valid minor upgrade target(s) for the current version; NON-COMPLIANT = \($s.max_behind + 1)+; UNKNOWN = lookup failed or current version not returned (deprecated).",
     "  Source  : ValidUpgradeTarget (IsMajorVersionUpgrade=false) of describe-db-engine-versions --engine-version <current>, per server; latest minor per major = highest valid target seen.",
     "  Regions : \($ro | region_mode_txt); empty regions are only counted; PER REGION lists regions with databases or an AWS error.",
-    "  Pending : maintenance actions AWS scheduled or offered and not yet applied (clusters include member actions).",
+    "  Pending : maintenance actions AWS scheduled or offered and not yet applied (clusters include member and global database actions); DUE = earliest of current / auto-apply / forced date.",
     "  Globals : Aurora global databases from describe-global-clusters; overall = worst member; mismatch = same version, different status across regions.",
     "  Read-only: nothing was changed.";
 
@@ -476,22 +518,18 @@ def riskc($n; $c): if $n > 0 then $c else "zero" end;
 def dleft: if . == null then "" elif . < 0 then "\(-.) day(s) overdue" elif . == 0 then "today" else "in \(.) day(s)" end;
 # gbadge: "global" badge next to an Aurora global database member.
 def gbadge: if .global_role == "unknown" then " <span class=\"gb unk\" title=\"describe-global-clusters unavailable for this account\">global: unknown</span>"
-  elif (.global_cluster // "") != "" then " <span class=\"gb\(if ._gmm then " mm" else "" end)\" title=\"\(if ._gmm then "Global DB members differ (version or status across regions)" else "Aurora global database" end)\">global: \(.global_cluster | h) &middot; \(.global_role | h)\(if .member_count == 0 then " (headless)" else "" end)</span>" else "" end;
+  elif (.global_cluster // "") != "" then " <span class=\"gb\(if ._gmm then " mm" else "" end)\" title=\"\(if ._gmm then "Global DB members differ (version or status across regions)" else "Aurora global database" end)\">Global: \(.global_cluster | h) &middot; \(.global_role | h)\(if .member_count == 0 then " (headless)" else "" end)</span>" else "" end;
 # html_row: one <tr> of the main HTML table.
 def html_row:
   . as $x
-  | "<tr data-i=\"\(._i)\"><td>" + (if .exception == "yes" and .compliance_status == "COMPLIANT" then "<span class=\"st ok exc\" title=\"Exception until \(.exception_expires | h); actual status \(.actual_status | h)\">COMPLIANT (EXCEPTION)</span><div class=\"sub\">actual \(.actual_status | h)</div>"
+  | "<tr data-i=\"\(._i)\"\(if (.global_cluster // "") != "" then " class=\"gg\"" else "" end)><td>" + (if .exception == "yes" and .compliance_status == "COMPLIANT" then "<span class=\"st ok exc\" title=\"Exception until \(.exception_expires | h); actual status \(.actual_status | h)\">COMPLIANT (EXCEPTION)</span><div class=\"sub\">actual \(.actual_status | h)</div>"
        else "<span class=\"st \(.compliance_status | stc)\">\(.compliance_status | h)</span>" end) + "</td><td data-s=\"\(.versions_behind // -1 | h)\">\(.versions_behind | dash)</td>"
-  + "<td><b>\(.identifier | h)</b>" + gbadge + (if .members != "" then "<div class=\"sub\">\(.members | h)</div>" else "" end) + "</td>"
+  + "<td><b>\(.identifier | h)</b>" + gbadge + (if .members != "" then "<div class=\"sub\">\(.members | h)</div>" else "" end)
+  + (if .pending_actions_count > 0 then "<div><a href=\"#pending\" class=\"pl\" data-i=\"\(._i)\" title=\"Show this server in the Pending maintenance tab\">\(.pending_actions_count) pending</a></div>" else "" end) + "</td>"
   + "<td>\(.resource_type | h)</td><td>\(.major_version | h)</td><td class=\"mono\">\(.current_version | h)\(if .deprecated_version then " <span class=\"st bad\">DEPRECATED</span>" else "" end)</td><td class=\"mono\">\(.latest_minor_version | dash | h)</td>"
   + "<td class=\"mono small\">\(.newer_versions | short_list | h)</td><td class=\"mono small\">\(.default_auto_upgrade_target | dash | h)</td>"
   + "<td class=\"\(if .auto_minor_upgrade == "true" then "ok" elif .auto_minor_upgrade == "unknown" then "muted" else "warn" end)\">\(.auto_minor_upgrade | h)</td>"
   + "<td>\(.standard_support_end | dash | h)</td><td>\(.extended_support_end | dash | h)</td><td class=\"\(.support_flag | sfc)\">\(.support_flag | h)</td>"
-  + "<td data-s=\"\(.pending_actions_count | h)\">" + (if .pending_actions_count == 0 then "<span class=\"muted\">0</span>"
-       else "<details class=\"pend\" title=\"\(pend_tip | h)\"><summary><span class=\"badge\">\(.pending_actions_count | h)</span></summary><ul>"
-            + (.pending_actions_detail | map("<li>\(.text | h)" + (if .auto_applied_after_ist then "<div class=\"sub\">auto-apply \(.auto_applied_after_utc | h) = \(.auto_applied_after_ist | h)</div>" else "" end)
-                + (if .forced_apply_ist then "<div class=\"sub\">forced \(.forced_apply_utc | h) = \(.forced_apply_ist | h)</div>" else "" end) + "</li>") | join("")) + "</ul></details>"
-            + (if .days_until_maintenance != null then "<div class=\"sub \(if .days_until_maintenance < 0 then "bad" elif .days_until_maintenance <= 14 then "warn" else "" end)\">next \(.next_maintenance | h) &middot; \(.days_until_maintenance | dleft)</div>" else "" end) end) + "</td><td class=\"small\">\(.maint_window_utc | dash | h) UTC<br>\(.maint_window_ist | dash | h) IST</td>"
   + "<td>\(if (.account_name // "") != "" then "\(.account_name) (\(.account_id))" else .account_id end | h)<div class=\"sub\">\(.profile | h) &middot; \(.region | h)</div></td>"
   + (if exc_on then "<td class=\"small exc-c\" data-s=\"\({"yes": 2, "expired": 1}[.exception] // 0)\">" + (if .exception == "no" then "<span class=\"muted\">-</span>"
        else "\(.exception_reason | h)<div class=\"sub\">until \(.exception_expires | h)</div>"
@@ -508,12 +546,11 @@ def region_tr($foot):
   + "<td class=\"n\" data-s=\"\(.total)\"><b>\(.total)</b></td><td class=\"n \(if .compliant > 0 then "ok" else "" end)\" data-s=\"\(.compliant)\">\(.compliant)</td>"
   + "<td class=\"n \(if .non_compliant > 0 then "bad" else "" end)\" data-s=\"\(.non_compliant)\">\(.non_compliant)</td><td class=\"n\" data-s=\"\(.unknown)\">\(.unknown)</td>"
   + "<td class=\"n \(.pct_compliant | pctc)\" data-s=\"\(.pct_compliant // -1)\">" + (if .pct_compliant == null then "-" else "\(.pct_compliant)%<div class=\"bar\"><i class=\"\(.pct_compliant | pctc)\" style=\"width:\(.pct_compliant)%\"></i></div>" end) + "</td>"
-  + "<td class=\"n \(if .with_pending > 0 then "warn" else "" end)\" data-s=\"\(.with_pending)\">\(.with_pending)\(if .pending_total > 0 then "<div class=\"sub\">\(.pending_total) action(s)</div>" else "" end)</td>"
   + "<td class=\"n \(if .past_standard_support > 0 then "bad" else "" end)\" data-s=\"\(.past_standard_support)\">\(.past_standard_support)</td></tr>";
 # html_regions: the Per region section.
 def html_regions($r; $s; $ro; $multi):
   "<section id=\"regions\"><h2>Per region <span class=\"muted\">\($ro | region_line) &middot; \($ro | region_mode_txt | h)\(if $multi then " &middot; per account x region" else "" end) &middot; click a header to sort</span></h2>"
-  + "<table class=\"sortable regions\"><thead><tr><th>Account</th><th>Region</th><th>Status</th><th>Total</th><th>Compliant</th><th>Non-compliant</th><th>Unknown</th><th>% compliant</th><th>Pending maint.</th><th>Past standard support</th></tr></thead><tbody>"
+  + "<table class=\"sortable regions\"><thead><tr><th>Account</th><th>Region</th><th>Status</th><th>Total</th><th>Compliant</th><th>Non-compliant</th><th>Unknown</th><th>% compliant</th><th>Past standard support</th></tr></thead><tbody>"
   + ($r | shown_regions | map(region_tr(false)) | join("")) + "</tbody><tfoot>" + ($s.regions_total | region_tr(true)) + "</tfoot></table>"
   + "</section>";
 # account_tr / html_accounts: the Per account table (multi-account and merged reports).
@@ -523,11 +560,10 @@ def account_tr:
   + "<td class=\"n\" data-s=\"\(.total)\"><b>\(.total)</b></td><td class=\"n \(if .compliant > 0 then "ok" else "" end)\" data-s=\"\(.compliant)\">\(.compliant)</td>"
   + "<td class=\"n \(if .non_compliant > 0 then "bad" else "" end)\" data-s=\"\(.non_compliant)\">\(.non_compliant)</td><td class=\"n\" data-s=\"\(.unknown)\">\(.unknown)</td>"
   + "<td class=\"n \(.pct_compliant | pctc)\" data-s=\"\(.pct_compliant // -1)\">" + (if .pct_compliant == null then "-" else "\(.pct_compliant)%<div class=\"bar\"><i class=\"\(.pct_compliant | pctc)\" style=\"width:\(.pct_compliant)%\"></i></div>" end) + "</td>"
-  + "<td class=\"n \(if .with_pending > 0 then "warn" else "" end)\" data-s=\"\(.with_pending)\">\(.with_pending)\(if .pending_total > 0 then "<div class=\"sub\">\(.pending_total) action(s)</div>" else "" end)</td>"
   + "<td class=\"n \(if .past_standard_support > 0 then "bad" else "" end)\" data-s=\"\(.past_standard_support)\">\(.past_standard_support)</td></tr>";
 def html_accounts($s):
   "<section id=\"accounts\"><h2>Per account <span class=\"muted\">\($s.accounts | length) account(s) &middot; click a header to sort</span></h2>"
-  + "<table class=\"sortable accounts\"><thead><tr><th>Account</th><th>Collected</th><th>Regions with DBs</th><th>Total</th><th>Compliant</th><th>Non-compliant</th><th>Unknown</th><th>% compliant</th><th>Pending maint.</th><th>Past standard support</th></tr></thead><tbody>"
+  + "<table class=\"sortable accounts\"><thead><tr><th>Account</th><th>Collected</th><th>Regions with DBs</th><th>Total</th><th>Compliant</th><th>Non-compliant</th><th>Unknown</th><th>% compliant</th><th>Past standard support</th></tr></thead><tbody>"
   + ($s.accounts | map(account_tr) | join("")) + "</tbody></table></section>";
 # html_sources: the Merged inputs section (only for --merge reports).
 def html_sources($r):
@@ -553,18 +589,68 @@ def html_globals($s):
         + ([.members[] | "<tr><td>\(.role | h)</td><td>\(.region | h)</td><td>\(.identifier | h)\(if .headless then " <span class=\"muted\">(headless)</span>" else "" end)</td><td class=\"mono\">\(.current_version | dash | h)</td>"
             + "<td><span class=\"st \(.compliance_status | stc)\">\(.compliance_status | h)</span>\(if .versions_behind != null then " <span class=\"muted\">\(.versions_behind) behind</span>" else "" end)</td></tr>"] | join(""))
         + "</tbody></table>"
-        + ([ (if $g.not_scanned > 0 then "\($g.not_scanned) member(s) not scanned" else empty end), ($g.pending[] | "pending: " + (. | h)) ] | if length == 0 then "" else "<p class=\"small muted\">" + join(" &middot; ") + "</p>" end)
+        + ([ (if $g.not_scanned > 0 then "\($g.not_scanned) member(s) not scanned" else empty end) ] | if length == 0 then "" else "<p class=\"small muted\">" + join(" &middot; ") + "</p>" end)
         + "</details>"] | join(""))
   + "</section>" end;
+# ------------------------------------------------------------------ Pending maintenance tab (v1.7.0)
+# dcls: CSS class for a date $d days away (red = overdue or within 7 days, amber = within 30 days).
+def dcls: if . == null then "" elif . <= 7 then "bad" elif . <= 30 then "warn" else "" end;
+# pdate($ist; $utc; $d): one date cell (IST, days left, UTC underneath); data-s sorts by days (no date last).
+def pdate($ist; $utc; $d):
+  "<td class=\"small \($d | dcls)\" data-s=\"\($d // 99999)\">" + (if $ist == null then "<span class=\"muted\">-</span>"
+    else "\($ist | h)<div class=\"sub\">\($d | dleft | h)\(if $utc then " &middot; " + ($utc | h) else "" end)</div>" end) + "</td>";
+# pend_tr($x; $k): one action row; $x = its server row (with _i / _gmm), $k = index in page data pend[].
+def pend_tr($x; $k):
+  "<tr data-p=\"\($k)\" data-i=\"\($x._i)\"\(if ($x.global_cluster // "") != "" then " class=\"gg\"" else "" end)>"
+  + "<td><a href=\"#compliance\" class=\"sl\" data-i=\"\($x._i)\" title=\"Show this server in the Patch compliance tab\"><b>\($x.identifier | h)</b></a>" + ($x | gbadge) + "</td>"
+  + "<td>\(if ($x.account_name // "") != "" then "\($x.account_name) (\($x.account_id))" else $x.account_id end | h)</td>"
+  + "<td>\($x.region | h)</td><td>\($x.engine | h)<div class=\"sub mono\">\($x.current_version | h)</div></td>"
+  + "<td><b>\(.action | h)</b>\(if .opt_in_status != "" then "<div class=\"sub\">opt-in: \(.opt_in_status | h)</div>" else "" end)</td>"
+  + "<td>\(.applies | h)</td>"
+  + (if .auto_ist == null and .current_apply != null then   # opted in / scheduled for the next window: AWS gives only the date (UTC)
+       "<td class=\"small \(.days_until | dcls)\" data-s=\"\(.days_until // 99999)\">next window \(.current_apply | h)<div class=\"sub\">\(.days_until | dleft | h) &middot; scheduled\(if .opt_in_status != "" then " (opt-in)" else "" end)</div></td>"
+     else pdate(.auto_ist; .auto_utc; .auto_days) end) + pdate(.forced_ist; .forced_utc; .forced_days)
+  + "<td class=\"small\">\($x.maint_window_ist | dash | h)</td>"
+  + "<td class=\"small\">\(if .description == "" then "<span class=\"muted\">-</span>" else (.description | h) end)\(if .days_until == null then " <span class=\"st unk\">optional</span>" else "" end)</td></tr>";
+# html_pending($r; $irows; $P): the Pending maintenance tab (cards, filters, one flat table soonest first).
+def html_pending($r; $irows; $P):
+  ([$P[] | select(.due == "over" or .due == "d7")] | length) as $n7
+  | ([$P[] | select(.due == "over" or .due == "d7" or .due == "d30")] | length) as $n30
+  | ([$P[] | select(.due == "opt")] | length) as $nopt
+  | "<div id=\"tab-pend\" class=\"tab\" role=\"tabpanel\" aria-labelledby=\"tb-pend\" hidden>"
+  + "<div class=\"toolbar\" id=\"p-filters\"><select id=\"p-acct\" aria-label=\"Account\"><option value=\"\">All accounts</option></select><select id=\"p-region\" aria-label=\"Region\"><option value=\"\">All regions</option></select>"
+  + "<select id=\"p-engine\" aria-label=\"Engine\"><option value=\"\">All engines</option></select><select id=\"p-action\" aria-label=\"Action type\"><option value=\"\">All actions</option></select>"
+  + "<select id=\"p-on\" aria-label=\"Applies to\"><option value=\"\">Applies to: any</option><option value=\"cluster\">Cluster</option><option value=\"member\">Member instance</option><option value=\"instance\">Instance</option><option value=\"global\">Global database</option></select>"
+  + "<select id=\"p-due\" aria-label=\"Due\"><option value=\"\">Due: any</option><option value=\"over\">Overdue</option><option value=\"d7\">Within 7 days</option><option value=\"d30\">Within 30 days</option><option value=\"later\">Later than 30 days</option><option value=\"opt\">Optional (no date)</option></select>"
+  + "<select id=\"p-gl\" aria-label=\"Global or standalone\"><option value=\"\">Global + standalone</option><option value=\"g\">Global only</option><option value=\"s\">Standalone only</option></select>"
+  + "<input id=\"p-q\" type=\"search\" placeholder=\"Search server, action, description\" aria-label=\"Search pending actions\">"
+  + "<span id=\"p-srv\" class=\"chip\" hidden>Server: <b></b> <button type=\"button\" id=\"p-srv-x\" aria-label=\"Show all servers\">&times;</button></span>"
+  + "<button id=\"p-reset\" type=\"button\">Reset</button><button id=\"p-csv\" class=\"pri\" type=\"button\">Export CSV</button><span class=\"cnt\" id=\"p-count\"></span></div>"
+  + "<div class=\"cards pcards\">"
+  + cardx("All pending actions"; ($P | length); "c-tot"; "on \([$P[].i] | unique | length) server(s)"; "p:"; ""; false)
+  + cardx("Overdue / due within 7 days"; $n7; riskc($n7; "bad"); "auto-apply or forced soon"; "p:d7"; ""; false)
+  + cardx("Due within 30 days"; $n30; riskc($n30; "warn"); "incl. the 7-day ones"; "p:d30"; ""; false)
+  + cardx("Optional"; $nopt; riskc($nopt; "info"); "no date: applies only when you choose"; "p:opt"; ""; false) + "</div>"
+  + (if ($P | length) == 0 then "<p id=\"p-none\" class=\"none\">No pending maintenance. AWS has nothing scheduled or offered for these servers.</p>" else "" end)
+  + "<p id=\"p-empty\" class=\"empty\" hidden>No actions match. <button type=\"button\" id=\"p-empty-reset\">Clear filters</button></p>"
+  + (if ($P | length) == 0 then "" else
+      "<div class=\"pscroll\"><table class=\"sortable ptbl\" id=\"p-tbl\"><thead><tr><th>Server</th><th>Account</th><th>Region</th><th>Engine / version</th><th>Action</th><th>Applies to</th><th>Auto-apply (IST)</th><th>Forced (IST)</th><th>Maintenance window (IST)</th><th>Description</th></tr></thead><tbody>"
+      + ([$P | to_entries[] | .key as $k | .value | pend_tr($irows[.i]; $k)] | join("")) + "</tbody></table></div>" end)
+  + "<p class=\"small muted\">Soonest first; actions of one Aurora global database are kept together. Red = overdue or within 7 days, amber = within 30 days. Click a server to see it in Patch compliance.</p>"
+  + "</div>";
 # page_data($r): JSON embedded in the page for lib/compliance_page.js (filters, totals, CSV export);
 # "<" and line separators are escaped so the JSON cannot close the <script> tag.
 def page_data($r):
-  {cols: (cols + ["next_maintenance","days_until_maintenance","global_cluster","global_role","account_name"] + exc_cols),
+  # v1.7.0: in-page Export CSV layout (both tabs, one row per server); the command-line CSV keeps `cols` + extras
+  {cols: (["account_id","account_name","profile","region","resource_type","identifier","members","engine","major_version","current_version",
+           "latest_minor_version","versions_behind","newer_versions","compliance_status","auto_minor_upgrade","standard_support_end","extended_support_end",
+           "support_flag","deprecated_version","global_cluster","global_role","maint_window_ist","pending_count","next_due","next_action","pending_actions"] + exc_cols),
    csv_acct: (if ($r.meta.accounts | length) == 1 then $r.meta.accounts[0].account else "" end), csv_stamp: ($r.meta.generated_utc | gsub("[^0-9]"; "") | .[0:12]),
    nc_only: $nc_only,
    accounts: [$r.meta.accounts[] | {account, profile, name: (.name // "")}],
    globals: [$r.summary.globals[] | {a: .account_id, g: .global_cluster}],
    engines: [$r.summary.engines[] | {engine, anchor, majors: [.majors[] | {major, latest_minor, standard_support_end, support_flag}]}],
+   pend: [pend_flat($r)[] | del(.on, .auto_days, .forced_days)],
    rows: [$r.rows[] | del(.pending_actions_detail, .excluded_targets, .version_warnings, .tags, .arn, .note, .global_arn, .global_pending_raw, .upgrade_command)]}
   + (if exc_on then {exc: true} else {} end)
   | tojson | gsub("<"; "\\u003c") | gsub("\u2028"; "\\u2028") | gsub("\u2029"; "\\u2029");
@@ -573,6 +659,7 @@ def html:
   . as $r | $r.summary as $s | $s.region_overview as $ro | (($r.meta.accounts | length) > 1) as $multi
   | ([$s.globals[] | select(.version_differs or .region_status_mismatch) | {key: "\(.account_id)|\(.global_cluster)", value: true}] | from_entries) as $gmm
   | ($r.rows | to_entries | map(.value + {_i: .key, _gmm: ($gmm["\(.value.account_id)|\(.value.global_cluster // "")"] // false)})) as $irows
+  | pend_flat($r) as $P
   | "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\"><title>RDS patch compliance - \($r.meta.generated_utc | h)</title><style>"
   + "body{font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;margin:0;background:#f5f6f8;color:#1f2933}header{background:#232f3e;color:#fff;padding:16px 26px}"
   + "header h1{margin:0;font-size:21px}header p{margin:4px 0 0;color:#c9d1d9;font-size:13px}main{padding:16px 26px}"
@@ -611,12 +698,23 @@ def html:
   + ".st.warn{background:#fff3e0;color:#b26a00}.gb.mm{background:#fff3e0;color:#b26a00}.empty{background:#fff3e0;border-radius:6px;padding:8px 12px;color:#7a4a00;font-weight:600}.empty[hidden]{display:none}"
   + ".gdb{background:#fff;border-radius:8px;margin:0 0 6px;box-shadow:0 1px 3px rgba(0,0,0,.12)}.gdb summary{cursor:pointer;padding:7px 12px;font-size:13px}.gdb table{margin:0 12px 8px;width:auto}.gdb p{margin:0 12px 8px}.flt-note{display:none;color:#b26a00;font-size:12px;margin:0 0 8px}.filtered .flt-note{display:block}"
   + ".about{margin:18px 0;background:#fff;border-radius:8px;padding:8px 14px;box-shadow:0 1px 3px rgba(0,0,0,.12);font-size:12.5px}.about summary{cursor:pointer;font-weight:600}footer{padding:10px 26px 24px;color:#7b8794;font-size:12px}"
+  + ".tabs{display:flex;gap:4px;background:#232f3e;padding:0 26px}.tabs button{border:0;background:none;color:#c9d1d9;font-size:14px;font-weight:600;padding:10px 16px;cursor:pointer;border-radius:8px 8px 0 0}"
+  + ".tabs button:hover{color:#fff}.tabs button.on{background:#f5f6f8;color:#1f2933}.tabs .tn{display:inline-block;margin-left:6px;min-width:18px;padding:0 7px;border-radius:9px;background:#52606d;color:#fff;font-size:11.5px;text-align:center}.tabs .tn.w{background:#e08a00}"
+  + "details.eng-sec,section{scroll-margin-top:60px}tr{scroll-margin-top:80px}.tab[hidden]{display:none}a.pl{display:inline-block;margin-top:3px;font-size:11px;font-weight:600;color:#b26a00;background:#fff3e0;border-radius:9px;padding:1px 8px;text-decoration:none}a.pl:hover{text-decoration:underline}"
+  + "a.sl{color:#0d47a1;text-decoration:none}a.sl:hover{text-decoration:underline}tr.gg td:first-child{box-shadow:inset 3px 0 0 #7e57c2}tr.hl td{background:#fff8c4 !important;transition:background .3s}"
+  + ".pscroll{overflow-x:auto;max-width:100%}table.ptbl{width:100%;min-width:1100px}table.ptbl td.bad{color:#c62828}table.ptbl td.warn{color:#b26a00}.toolbar input#p-q{width:220px;margin:0}"
+  + ".chip{display:inline-flex;align-items:center;gap:4px;background:#e3f0fb;color:#0d47a1;border-radius:12px;padding:3px 4px 3px 10px;font-size:12.5px}.chip[hidden]{display:none}.chip button{border:0;background:none;cursor:pointer;font-size:15px;line-height:1;padding:0 4px;color:#0d47a1}"
+  + ".none{background:#e6f4ea;border-radius:6px;padding:10px 14px;color:#1b5e20;font-weight:600}"
+  + "@media (max-width:700px){header,main{padding-left:12px;padding-right:12px}.tabs{padding:0 8px}.tabs button{padding:9px 10px;font-size:13px}.cards.stat .card{min-width:140px}.toolbar input#q,.toolbar input#p-q{width:100%}.toolbar select{max-width:none;flex:1 1 45%}details.eng-sec,#regions,#accounts,#globals,#sources{overflow-x:auto}.escroll{display:block;max-width:100%}}"
   + (if exc_on then ".st.exc{background:#e3f2fd;color:#0d47a1}.xf{font-size:10.5px;margin-top:2px}.excn{background:#fff3e0;border-radius:6px;padding:6px 12px;color:#7a4a00;font-size:12.5px;margin:0 0 8px}" else "" end)
   + "</style></head><body>"
-  + "<header id=\"top\"><h1>RDS patch compliance report</h1><p>\($r.meta.generated_utc | h) &middot; \($r.meta.generated_local | h) &middot; accounts \($r.meta.accounts | map(alab) | join(", ") | h) &middot; Regions: \($ro | region_line)\(if $r.meta.merge then " &middot; merged from \($r.meta.merge.files) file(s)" else "" end)</p></header><main>"
+  + "<header id=\"top\"><h1>RDS patch compliance report</h1><p>\($r.meta.generated_utc | h) &middot; \($r.meta.generated_local | h) &middot; accounts \($r.meta.accounts | map(alab) | join(", ") | h) &middot; Regions: \($ro | region_line)\(if $r.meta.merge then " &middot; merged from \($r.meta.merge.files) file(s)" else "" end)</p></header>"
+  + "<nav class=\"tabs\" role=\"tablist\"><button type=\"button\" role=\"tab\" id=\"tb-comp\" data-tab=\"comp\" aria-controls=\"tab-comp\" aria-selected=\"true\" class=\"on\">Patch compliance <span class=\"tn\">\($s.total)</span></button>"
+  + "<button type=\"button\" role=\"tab\" id=\"tb-pend\" data-tab=\"pend\" aria-controls=\"tab-pend\" aria-selected=\"false\">Pending maintenance <span class=\"tn\(if ($P | length) > 0 then " w" else "" end)\">\($P | length)</span></button></nav><main>"
+  + "<div id=\"tab-comp\" class=\"tab\" role=\"tabpanel\" aria-labelledby=\"tb-comp\">"
   + "<div class=\"toolbar\" id=\"filters\"><select id=\"f-acct\" aria-label=\"Account\"><option value=\"\">All accounts</option></select><select id=\"f-region\" aria-label=\"Region\"><option value=\"\">All regions</option></select>"
   + "<select id=\"f-engine\" aria-label=\"Engine\"><option value=\"\">All engines</option></select><select id=\"f-status\" aria-label=\"Compliance status\"><option value=\"\">All statuses</option></select><span id=\"g-box\" class=\"gchk\"><label><input type=\"checkbox\" id=\"f-gl\"> Global</label><label><input type=\"checkbox\" id=\"f-sa\"> Standalone</label></span>"
-  + "<input id=\"q\" type=\"search\" placeholder=\"Search DB, account, engine, version\" aria-label=\"Search\"><select id=\"f-flag\" aria-label=\"Flag\"><option value=\"\">Flag: any</option><option value=\"past\">Extended Support</option><option value=\"near\">Support ending</option><option value=\"aoff\">Auto minor upgrade off</option><option value=\"pend\">Pending maintenance</option><option value=\"dep\">Version not returned</option></select>"
+  + "<input id=\"q\" type=\"search\" placeholder=\"Search DB, account, engine, version\" aria-label=\"Search\"><select id=\"f-flag\" aria-label=\"Flag\"><option value=\"\">Flag: any</option><option value=\"past\">Extended Support</option><option value=\"near\">Support ending</option><option value=\"aoff\">Auto minor upgrade off</option><option value=\"dep\">Version not returned</option></select>"
   + (if exc_on then "<select id=\"f-exc\" aria-label=\"Exceptions\"><option value=\"\">Exceptions: all</option><option value=\"yes\">Exceptions only</option><option value=\"no\">Non-exceptions</option><option value=\"attn\">Expiring soon or no longer needed</option><option value=\"expired\">Expired exceptions</option></select>" else "" end)
   + "<button id=\"f-reset\" type=\"button\">Reset</button><button id=\"f-csv\" class=\"pri\" type=\"button\">Export CSV</button><span class=\"cnt\" id=\"f-count\"></span></div>"
   + "<p id=\"empty\" class=\"empty\" hidden>No servers match. <button type=\"button\" id=\"empty-reset\">Clear filters</button></p><p class=\"flt-note\">Filtered view: cards and tables show only matching servers.</p>"
@@ -632,7 +730,6 @@ def html:
   + cardx("Extended Support"; $s.past_standard_support; riskc($s.past_standard_support; "bad"); "past standard support"; "f:past"; ""; false)
   + cardx("Support ending"; $s.nearing_end_of_support; riskc($s.nearing_end_of_support; "warn"); "within \($s.warn_days) days"; "f:near"; ""; false)
   + cardx("Auto minor upgrade off"; $s.auto_minor_off; riskc($s.auto_minor_off; "warn"); "incl. mixed clusters"; "f:aoff"; ""; false)
-  + cardx("Pending maintenance"; $s.with_pending; riskc($s.with_pending; "warn"); ($s.pending_by_action | to_entries | map("\(.key) \(.value)") | join(", ") | if . == "" then "none" else . end); "f:pend"; ""; false)
   + cardx("Version not returned"; $s.deprecated; riskc($s.deprecated; "bad"); "deprecated / not offered"; "f:dep"; ""; false)
   + cardx("Global databases"; $s.global_databases; (if $s.global_unknown > 0 then "warn" else riskc($s.global_databases; "info") end); "\($s.global_members) members" + ([$s.globals[] | select(.version_differs or .region_status_mismatch)] | length | if . > 0 then " · \(.) mismatched" else "" end) + (if $s.global_unknown > 0 then "; \($s.global_unknown) unknown" else "" end); "gl"; ""; false)
   + cardx("Regions"; "\($ro.with_databases) / \($ro.checked)"; (if $ro.error > 0 then "bad" else "info" end); "with DBs; \($ro.empty) empty, \($ro.error) error(s)"; "scroll:regions"; ""; false) + "</div>"
@@ -644,16 +741,17 @@ def html:
   + "<h2 class=\"secs\">Servers by engine <button type=\"button\" id=\"x-open\">Expand all</button><button type=\"button\" id=\"x-close\">Collapse all</button></h2>"
   + ([$s.engines[] | . as $e
       | "<details class=\"eng-sec\" id=\"\($e.anchor)\" data-e=\"\($e.engine | h)\"><summary><b>\($e.engine | h)</b> <span class=\"es muted\">\($e.total) &middot; non-compliant \($e.non_compliant) &middot; \($e.pct_compliant)%</span></summary>"
-        + "<table class=\"main\"><thead><tr><th>Status</th><th>Behind</th><th>Identifier / members</th><th>Type</th><th>Major</th><th>Current</th><th>Latest minor</th><th>Valid minor targets</th><th>Auto-upgrade default</th><th>Auto minor</th><th>Standard end</th><th>Extended end</th><th>Support</th><th>Pending maint.</th><th>Maint. window</th><th>Account</th>" + (if exc_on then "<th>Exception</th>" else "" end) + "</tr></thead><tbody>"
+        + "<table class=\"main\"><thead><tr><th>Status</th><th>Behind</th><th>Identifier / members</th><th>Type</th><th>Major</th><th>Current</th><th>Latest minor</th><th>Valid minor targets</th><th>Auto-upgrade default</th><th>Auto minor</th><th>Standard end</th><th>Extended end</th><th>Support</th><th>Account</th>" + (if exc_on then "<th>Exception</th>" else "" end) + "</tr></thead><tbody>"
         + ([$irows[] | select(.engine == $e.engine) | html_row] | join("")) + "</tbody></table></details>"] | join(""))
   + (if ($r.rows | length) == 0 then "<p>No servers matched.</p>" else "" end)
+  + "</div>" + html_pending($r; $irows; $P)
   + (if ($r.errors | length) > 0 then "<h2>Errors</h2><ul>" + ($r.errors | map("<li>\(.profile | h)/\(.region | h): \(.call | h): \(.message | h)</li>") | join("")) + "</ul>" else "" end)
   + html_sources($r)
   + "<details id=\"about\" class=\"about\"><summary>About this report</summary><ul>"
   + "<li><b>COMPLIANT</b> = at most \($s.max_behind) valid minor upgrade target(s) for the current version; <b>NON-COMPLIANT</b> = \($s.max_behind + 1) or more; <b>UNKNOWN</b> = lookup failed or current version not returned (deprecated).</li>"
   + "<li>Counted are only the valid minor upgrade targets RDS returns for the server's current version (describe-db-engine-versions --engine-version &lt;current&gt;, ValidUpgradeTarget with IsMajorVersionUpgrade=false). Latest minor per major = highest valid target seen (or the current version when up to date).</li>"
   + "<li><b>Regions:</b> \($ro | region_mode_txt | h). Empty regions are only counted; tables list regions with databases or an AWS error.</li>"
-  + "<li><b>Pending maint.</b> = maintenance actions AWS has scheduled or offered for this server that haven't been applied yet (cluster rows include their member instances' actions); click the badge to expand, hover for IST dates.</li>"
+  + "<li><b>Pending maintenance</b> (second tab) = maintenance actions AWS has scheduled or offered that haven't been applied yet, one row per action (cluster actions, member instance actions and Aurora global database actions), soonest first. A server's <i>N pending</i> link opens its actions there. Auto-apply = AWS applies it in the next maintenance window after that date; forced = applied on that date even outside the window; no date = optional.</li>"
   + "<li><b>Global databases</b> (Aurora): membership from describe-global-clusters (one call per account). Overall status = the worst member; <i>region status mismatch</i> = members on the same version but with a different status (valid targets differ per region). Automatic minor version upgrade does not apply to global database members.</li>"
   + (if exc_on then "<li><b>Exceptions</b> (compliance_exceptions.conf, scope patch): a listed NON-COMPLIANT server shows COMPLIANT (EXCEPTION) and counts as compliant until its expiry date (last valid UTC day); <i>actual</i> is the evaluated status. UNKNOWN stays UNKNOWN (the exception is still listed). Expired entries are evaluated normally; <i>expiring soon</i> = within 14 days; <i>no longer needed</i> = the server is compliant on its own.</li>" else "" end)
   + "<li>Read-only: nothing was changed.</li></ul></details>"

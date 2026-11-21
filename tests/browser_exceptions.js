@@ -22,7 +22,7 @@ const sleep = ms => new Promise(x => setTimeout(x, ms));
     return {compliant: card('compliant'), nc: card('non-compliant').v, pop, main: rows.length,
       excBadges: rows.filter(t => /COMPLIANT \(EXCEPTION\)/.test(t.cells[0].textContent)).length,
       foot: ft ? [+ft.cells[3].dataset.s, +ft.cells[4].dataset.s, +ft.cells[5].dataset.s] : null,
-      acc: [...document.querySelectorAll('#accounts tbody tr')].filter(vis).map(t => +t.cells[4].dataset.s).reduce((a, x) => a + x, 0),
+      acc: [...document.querySelectorAll('#accounts tbody tr')].filter(vis).map(t => +t.cells[3].dataset.s).reduce((a, x) => a + x, 0),
       eng: [...document.querySelectorAll('#eng-tbl tbody tr.er')].map(t => +t.cells[1].textContent).reduce((a, x) => a + x, 0),
       th: [...document.querySelectorAll('table.main thead')].every(h => /Exception/.test(h.textContent))}; });
   const sel = async (id, v) => { await g.select('#' + id, v); await sleep(60); };

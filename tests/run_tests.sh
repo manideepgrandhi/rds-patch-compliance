@@ -118,7 +118,7 @@ vce oracle-ee "${O}2026-10.mrp-2026-10.r1" 1 "${O}2026-07.mrp-2026-07.r10"
 
 echo "== usage / validation"
 t help 0 fleet --help;               has help out 'Exit codes'; has help out 'read-only'; has help out '--max-behind'; has help out 'describe-global-clusters'
-t version 0 fleet --version;         has version out '1\.6\.0'
+t version 0 fleet --version;         has version out '1\.7\.0'
 t badopt 1 fleet --bogus
 t badfmt 1 fleet -r us-east-1 -F xml
 t multinoout 1 fleet -r us-east-1 -F csv,html
@@ -269,11 +269,11 @@ CSV="$(find "$OUT/rep" -name '*.csv' ! -name '*_regions.csv')"; HTML="$(find "$O
 chk "csv header" test "$(head -1 "$CSV")" = '"account_id","profile","region","resource_type","identifier","members","engine","major_version","current_version","latest_minor_version","versions_behind","newer_versions","default_auto_upgrade_target","compliance_status","auto_minor_upgrade","standard_support_end","extended_support_end","support_flag","pending_actions_count","pending_actions","deprecated_version","maint_window_utc","maint_window_ist","next_maintenance","days_until_maintenance","global_cluster","global_role","account_name"'
 chk "csv rows = 22" test "$(python3 -c 'import csv,sys; print(sum(1 for _ in csv.reader(open(sys.argv[1])))-1)' "$CSV")" -eq 22
 chk "csv parses with 28 columns everywhere" test "$(python3 -c 'import csv,sys; print(set(len(r) for r in csv.reader(open(sys.argv[1]))))' "$CSV")" = "{28}"
-for p in 'id="q"' 'id="f-gl"' 'id="f-sa"' 'id="empty"' 'class="badge">2<' 'details class="pend"' '01:30 IST' "haven't been applied yet" 'Valid minor targets' 'Auto-upgrade default' 'table class="main"' 'st bad' 'st ok' 'Extended Support' 'id="about"' 'About this report' 'id="eng-tbl"' 'details class="eng-sec"' 'id="f-flag"' 'localeCompare' 'href="#eng-aurora-postgresql"'; do
+for p in 'id="q"' 'id="f-gl"' 'id="f-sa"' 'id="empty"' 'id="tab-comp"' 'id="tab-pend"' 'id="p-tbl"' 'class="pl" data-i=' '>2 pending<' 'class="sl" data-i=' '01:30 IST' "haven't been applied yet" 'Valid minor targets' 'Auto-upgrade default' 'table class="main"' 'st bad' 'st ok' 'Extended Support' 'id="about"' 'About this report' 'id="eng-tbl"' 'details class="eng-sec"' 'id="f-flag"' 'localeCompare' 'href="#eng-aurora-postgresql"'; do
     if grep -qF -- "$p" "$HTML"; then ok "html has $p"; else bad "html lacks $p"; fi
 done
 chk "html is well-formed enough (python html.parser)" python3 -c 'import html.parser,sys; html.parser.HTMLParser().feed(open(sys.argv[1]).read())' "$HTML"
-for p in '^SUMMARY' '^PER ENGINE / MAJOR VERSION' '^ABOUT THIS REPORT' '^=== aurora-postgresql: 7' '59.1% compliant' 'past standard support' 'Pending maint\.   : on 3 server\(s\): os-upgrade 2, system-update 2, db-upgrade 1' '^      pending: os-upgrade on member orders-pg15-2'; do
+for p in '^SUMMARY' '^PER ENGINE / MAJOR VERSION' '^ABOUT THIS REPORT' '^=== aurora-postgresql: 7' '59.1% compliant' 'past standard support' 'Pending maint\.   : on 3 server\(s\): os-upgrade 2, system-update 2, db-upgrade 1' '^PENDING MAINTENANCE \(5 action\(s\) on 3 server\(s\)' 'os-upgrade +member orders-pg15-2 +orders-aurora-pg15'; do
     if grep -qE -- "$p" "$TXT"; then ok "txt has /$p/"; else bad "txt lacks /$p/"; fi
 done
 chk "summary is at the top of the txt" test "$(grep -n '^SUMMARY' "$TXT" | cut -d: -f1)" -lt 10
@@ -318,11 +318,11 @@ hasnt disc_txt out '^Empty'
 has disc_txt out '^Accounts : 111111111111 prod-core \(prod\)   Regions: all enabled$'
 chk "disc_txt: no region names above SUMMARY" test "$(sed '/^SUMMARY/q' "$OUT/disc_txt.out" | grep -cE '[a-z]{2}-[a-z]+-[0-9]')" -eq 0
 has disc_txt out '^PER REGION'
-has disc_txt out '^  111111111111  us-east-1       databases      19     11      7     1   57\.9%     3'
+has disc_txt out '^  111111111111  us-east-1       databases      19     11      7     1   57\.9% +2$'
 has disc_txt out '^  111111111111  ca-central-1    error           0 .* see ERRORS \(no data\)'
 hasnt disc_txt out '^  [0-9]{12}  [a-z0-9-]+ +empty '
 chk "disc_txt: PER REGION = 2 databases + 1 error + ALL rows" test "$(sed -n '/^PER REGION/,/^$/p' "$OUT/disc_txt.out" | grep -cE '^  (111111111111|ALL) ')" -eq 4
-has disc_txt out '^  ALL           All regions                    20     12      7     1     60%     3'
+has disc_txt out '^  ALL           All regions                    20     12      7     1     60% +2$'
 has disc_txt out 'ca-central-1: rds describe-db-instances \(discovery probe\): .*AccessDenied'
 has disc_txt err 'discovery: probing 14 region\(s\), 8 at a time'
 t disc_files 0 discover -P prod -A -F csv,html -o "$OUT/disc"
@@ -509,12 +509,14 @@ if command -v node >/dev/null 2>&1 && [[ -x "${CHROME:-/usr/bin/google-chrome}" 
     chk "browser: filters, totals, per region, CSV export ($(jq -r '.checks' <<<"$res" 2>/dev/null) checks) ${res:0:300}" test "$rc" -eq 0
     res="$(node "$HERE/browser_check.js" "$(find "$MG" -name 'rds_patch_compliance_111111111111_*.html' | head -1)" 2>&1)"; rc=$?
     chk "browser: single-account report ${res:0:300}" test "$rc" -eq 0
+    res="$(node "$HERE/browser_tabs.js" "$MH" ${SHOTS:+"$SHOTS/tabs_merged"} 2>&1)"; rc=$?
+    chk "browser v1.7.0: two tabs on the merged report ($(jq -r '.checks' <<<"$res" 2>/dev/null) checks) ${res:0:300}" test "$rc" -eq 0
 else echo "  skip browser check (node + puppeteer-core on NODE_PATH + Chrome not found)"; fi
 
 echo "== v1.4.1: tampered --merge file cannot inject HTML/JS (M1)"
 XP='<img src=x data-xss=1 onerror="window.__xss=1">'
 XD="$OUT/xss in"; mkdir -p "$XD"
-jq --arg x "$XP" '.rows[0] |= (.versions_behind = null | .compliance_status = ("UNKNOWN" + $x)) | .rows[1] |= (.engine = ("aurora-mysql" + $x) | .compliance_status = "NON-COMPLIANT") | .accounts[0].name = ("acct" + $x) | .rows[2] |= (.global_cluster = ("g" + $x) | .global_role = "primary")' "$SD1" >"$XD/rds_patch_111111111111_20260921.json"
+jq --arg x "$XP" '.rows[0] |= (.versions_behind = null | .compliance_status = ("UNKNOWN" + $x)) | .rows[1] |= (.engine = ("aurora-mysql" + $x) | .compliance_status = "NON-COMPLIANT") | .accounts[0].name = ("acct" + $x) | .rows[2] |= (.global_cluster = ("g" + $x) | .global_role = "primary") | .rows |= map(.maint_window_ist = ("w" + $x) | .pending_actions_detail |= map(.action = ("a" + $x) | .description = ("d" + $x) | .opt_in_status = ("o" + $x) | .on = ("member m" + $x) | .auto_applied_after_ist = ("i" + $x)))' "$SD1" >"$XD/rds_patch_111111111111_20260921.json"
 mg xss 0 --merge "$XD" -o "$OUT/xss out/x.html" -F html,json,csv
 XH="$OUT/xss out/x.html"
 chk "xss: report written" test -s "$XH"
@@ -555,6 +557,8 @@ if command -v node >/dev/null 2>&1 && [[ -x "${CHROME:-/usr/bin/google-chrome}" 
     chk "browser: compat merged HTML filters + Export CSV ($(jq -r '.checks' <<<"$res" 2>/dev/null) checks) ${res:0:300}" test "$rc" -eq 0
     res="$(node "$HERE/browser_check.js" "$OUT/compat win/combined.html" 2>&1)"; rc=$?
     chk "browser: compat git-bash merged HTML ${res:0:300}" test "$rc" -eq 0
+    res="$(node "$HERE/browser_tabs.js" "$CH" 2>&1)"; rc=$?
+    chk "browser v1.7.0: two tabs on a merge of v1.3.0 data files ${res:0:300}" test "$rc" -eq 0
 fi
 
 echo "== v1.4.0: Aurora global databases"
@@ -572,6 +576,34 @@ t globtxt 0 global "${GR[@]}" -F txt,csv,html -o "$OUT/glob"
 GT="$(find "$OUT/glob" -name '*[0-9].txt' | head -1)"; GH="$(find "$OUT/glob" -name '*.html' | head -1)"; GC="$(find "$OUT/glob" -name '*[0-9].csv' | head -1)"
 chk "glob txt: header + section + mismatch" bash -c "grep -q 'Global databases : 2 (4 members)' '$GT' && grep -q '^GLOBAL DATABASES' '$GT' && grep -q 'region status mismatch' '$GT'"
 chk "glob csv: global_cluster/global_role then account_name last" bash -c "head -1 '$GC' | grep -q '\"global_cluster\",\"global_role\",\"account_name\"\$'"
+echo "== v1.7.0: two-tab report (Patch compliance + Pending maintenance)"
+chk "v1.7.0 txt: PENDING MAINTENANCE lists the global database action next to its cluster" bash -c "grep -q '^PENDING MAINTENANCE (6 action(s) on 3 server(s)' '$GT' && grep -qE 'system-update +global orders-global +orders-aurora-pg15' '$GT'"
+chk "v1.7.0 txt: no per-server 'pending:' lines, no PEND column" bash -c "! grep -qE '^ +pending: ' '$GT' && ! grep -qE ' PEND ' '$GT'"
+chk "v1.7.0 txt: soonest first outside a global group (inv-mysql db-upgrade before catalog-docdb)" bash -c "test \$(grep -nE 'db-upgrade +instance +inv-mysql' '$GT' | cut -d: -f1) -lt \$(grep -nE 'member catalog-docdb-2 +catalog-docdb' '$GT' | cut -d: -f1)"
+chk "v1.7.0 html: tabs + Pending table, no badge / details / window column" bash -c "grep -q 'id=\"tb-pend\"' '$GH' && grep -q 'id=\"p-tbl\"' '$GH' && ! grep -q 'details class=\"pend\"' '$GH' && ! grep -q 'Maint. window' '$GH' && ! grep -q 'value=\"pend\"' '$GH'"
+chk "v1.7.0 html: global members adjacent in tab 1 (orders-global rows are consecutive)" python3 - "$GH" <<'PY'
+import re,sys,json
+h=open(sys.argv[1]).read(); d=json.loads(re.search(r'id="pc-data">(.*?)</script>',h,re.S).group(1))
+order=[int(i) for i in re.findall(r'<tr data-i="(\d+)"',h)]
+keys=[(d['rows'][i]['account_id'],d['rows'][i].get('global_cluster') or None) for i in order]
+seen=set();last=None
+for k in keys:
+    if k[1] and k!=last and k in seen: sys.exit(1)
+    if k[1]: seen.add(k)
+    last=k
+roles=[d['rows'][i]['global_role'] for i in order if d['rows'][i].get('global_cluster')=='orders-global']
+sys.exit(0 if roles and roles[0]=='primary' else 1)
+PY
+chk "v1.7.0 csv: same 28 columns, global members adjacent" python3 - "$GC" <<'PY'
+import csv,sys
+r=list(csv.reader(open(sys.argv[1]))); h=r[0]; gi=h.index('global_cluster')
+assert len(h)==28 and all(len(x)==28 for x in r)
+g=[x[gi] for x in r[1:]]; seen=set(); last=None
+for k in g:
+    if k and k!=last and k in seen: sys.exit(1)
+    if k: seen.add(k)
+    last=k
+PY
 chk "glob: no ARN / command / tags / notes in txt csv html" bash -c "! grep -lE 'arn:aws|modify-db|modify-global|tag:|\"note\"|Copy</button>' '$GT' '$GC' '$GH'"
 chk "glob html: checkboxes + collapsed section + mismatch badge" bash -c "grep -q 'id=\"f-gl\"' '$GH' && ! grep -q 'f-global' '$GH' && grep -q 'details class=\"gdb\" data-g=\"orders-global\"' '$GH' && grep -q 'class=\"gb mm\"' '$GH' && grep -q '1 mismatched' '$GH' && grep -q '1 primary + 2 secondaries' '$GH'"
 MOCK_GLOBAL_DENY=1 t globdeny 0 global "${GR[@]}" -F json
@@ -592,6 +624,8 @@ has gtag err 'ignored since v1.4.0'; chk "gtag: no tag column" bash -c "! grep -
 if command -v node >/dev/null 2>&1 && [[ -x "${CHROME:-/usr/bin/google-chrome}" ]] && NODE_PATH="${NODE_PATH:-}" node -e 'require("puppeteer-core")' 2>/dev/null; then
     res="$(node "$HERE/browser_global.js" "$GH" ${SHOTS:+"$SHOTS"} 2>&1)"; rc=$?
     chk "browser: Global/Standalone, global section, search ${res:0:300}" test "$rc" -eq 0
+    res="$(node "$HERE/browser_tabs.js" "$GH" ${SHOTS:+"$SHOTS/tabs_global"} 2>&1)"; rc=$?
+    chk "browser v1.7.0: two tabs, global grouping, filters, cross-links, CSV, mobile ($(jq -r '.checks' <<<"$res" 2>/dev/null) checks) ${res:0:300}" test "$rc" -eq 0
 fi
 
 echo "== v1.5.0: account names (config map > iam alias > number), engine table, picker"
