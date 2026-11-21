@@ -118,7 +118,7 @@ vce oracle-ee "${O}2026-10.mrp-2026-10.r1" 1 "${O}2026-07.mrp-2026-07.r10"
 
 echo "== usage / validation"
 t help 0 fleet --help;               has help out 'Exit codes'; has help out 'read-only'; has help out '--max-behind'; has help out 'describe-global-clusters'
-t version 0 fleet --version;         has version out '1\.7\.0'
+t version 0 fleet --version;         has version out '1\.7\.1'
 t badopt 1 fleet --bogus
 t badfmt 1 fleet -r us-east-1 -F xml
 t multinoout 1 fleet -r us-east-1 -F csv,html
@@ -526,6 +526,18 @@ if command -v node >/dev/null 2>&1 && [[ -x "${CHROME:-/usr/bin/google-chrome}" 
     res="$(node "$HERE/xss_check.js" "$XH" 2>&1)"; rc=$?
     chk "xss: headless Chrome, no payload executed or injected ${res:0:300}" test "$rc" -eq 0
 else echo "  skip xss browser check (node + puppeteer-core on NODE_PATH + Chrome not found)"; fi
+
+echo "== v1.7.1: Pending maintenance action types (standard list + unknown type appended)"
+AT="$OUT/at in"; mkdir -p "$AT"
+jq '.rows |= map(.pending_actions_detail |= map(if .action == "os-upgrade" and .on == "" then .action = "storage-volume-update" else . end))' "$SD1" >"$AT/rds_patch_111111111111_20260921.json"
+mg atypes 0 --merge "$AT" -o "$OUT/at out/at.html" -F html,txt
+ATH="$OUT/at out/at.html"; ATT="$(find "$OUT/at out" -name '*.txt' | head -1)"
+chk "v1.7.1 html: dropdown has the 5 standard types with counts, zero ones disabled, unknown type appended" bash -c "grep -q '<option value=\"hardware-maintenance\" disabled>hardware-maintenance (0)</option><option value=\"ca-certificate-rotation\" disabled>ca-certificate-rotation (0)</option><option value=\"storage-volume-update\">storage-volume-update (1)</option>' '$ATH' && grep -q '<option value=\"db-upgrade\">db-upgrade (1)</option>' '$ATH'"
+chk "v1.7.1 txt: By type line" bash -c "grep -qE '^  By type: system-update 2, .*db-upgrade 1, .*storage-volume-update 1, .*hardware-maintenance 0, ca-certificate-rotation 0$' '$ATT'"
+if command -v node >/dev/null 2>&1 && [[ -x "${CHROME:-/usr/bin/google-chrome}" ]] && NODE_PATH="${NODE_PATH:-}" node -e 'require("puppeteer-core")' 2>/dev/null; then
+    res="$(node "$HERE/browser_tabs.js" "$ATH" 2>&1)"; rc=$?
+    chk "browser v1.7.1: unknown action type appended to the dropdown and strip ${res:0:300}" bash -c "test $rc -eq 0 && grep -q 'storage-volume-update' <<<'$res'"
+fi
 
 echo "== v1.3.1: merge compatibility (v1.3.0 + v1.3.1 files, report + summary script, duplicate older account)"
 CP="$OUT/compat in"; mkdir -p "$CP"; cp "$HERE"/fixtures/v130/*.json "$CP/"

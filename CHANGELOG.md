@@ -3,6 +3,11 @@
 Plain-English features for each published release. The What's new page is built from this file.
 Only GitHub releases are listed here (older README history before v1.3.1 is not a published release zip).
 
+## 1.7.1
+- Pending maintenance tab: the Action dropdown always lists the standard AWS types (system-update, db-upgrade, os-upgrade, hardware-maintenance, ca-certificate-rotation) with a count each; types with 0 are greyed out, and any other type found is added at the end
+- A one-line "Actions by type" strip above the table; click a count to show only that type (Reset clears it)
+- Text report: a "By type" line at the top of PENDING MAINTENANCE. CSV and JSON unchanged; summary script is 1.7.1 (no other change)
+
 ## 1.7.0
 - The HTML report has two tabs: **Patch compliance** and **Pending maintenance**. Each piece of information now appears once
 - Patch compliance no longer has the Pending card, the Pending column (badge you had to click), the maintenance window columns, the pending counts in the per account / per region tables, or the Pending option in Flag
