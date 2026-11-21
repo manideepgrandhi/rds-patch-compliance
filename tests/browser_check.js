@@ -115,7 +115,9 @@ function parseCsv(t) {
   await g.click('#f-csv'); await sleep(50); await g.click('#cpk [data-a="go"]'); let got = [];
   for (let i = 0; i < 50 && !(got = fs.readdirSync(dl).filter(f => f.endsWith('.csv'))).length; i++) await sleep(100);
   ok(got.length === 1 && got[0] === 'rds_patch_compliance_' + a1 + '_' + D.csv_stamp + '_filtered.csv', 'real CSV download with account in the name: ' + got);
-  if (got.length) ok(fs.readFileSync(path.join(dl, got[0]), 'utf8') === csv, 'downloaded bytes = export');
+  // v1.7.0: the picker starts with the pending / maintenance-window columns unticked
+  const csvDef = await g.evaluate(off => window.__pcCsv(JSON.parse(document.getElementById('pc-data').textContent).cols.filter(c => !off.includes(c))), D.cols_off || []);
+  if (got.length) ok(fs.readFileSync(path.join(dl, got[0]), 'utf8') === csvDef, 'downloaded bytes = export (default columns)');
   r.download = got[0];
   // reset
   await g.click('#f-reset'); await sleep(50); s = await st();
@@ -153,6 +155,7 @@ function parseCsv(t) {
   ok(await g.evaluate(() => [...document.querySelectorAll('details.eng-sec')].every(d => !d.open)), 'reset collapses the sections again');
   await g.click('#eng-tbl tr.er[data-e="' + e0 + '"] a.en'); await sleep(30);
   ok(await g.evaluate(a => document.getElementById(a).open, E0.anchor), 'engine name opens its server section');
+  await g.evaluate(() => document.getElementById('x-open').scrollIntoView({block: 'center'}));   // v1.7.0: not under the sticky filter bar
   await g.click('#x-open'); ok(await g.evaluate(() => [...document.querySelectorAll('details.eng-sec')].every(d => d.open)), 'Expand all');
   await g.click('#x-close'); ok(await g.evaluate(() => [...document.querySelectorAll('details.eng-sec')].every(d => !d.open)), 'Collapse all');
   const vis = () => g.evaluate(() => [...document.querySelectorAll('table.main tbody tr[data-i]')].filter(t => t.style.display !== 'none').length);
@@ -160,7 +163,7 @@ function parseCsv(t) {
   ok(await g.evaluate(() => document.getElementById('f-status').value === 'NON-COMPLIANT' && document.querySelector('.card[data-k="non-compliant"]').classList.contains('on')), 'Non-compliant card sets Status + highlight');
   await g.click('.card[data-k="non-compliant"]'); await sleep(30);
   ok(await g.evaluate(() => document.getElementById('f-status').value === '' && !document.querySelector('.card.on')), 'second click clears the filter');
-  const flags = {'extended-support': ['past', x => x.past_standard_support], 'pending-maintenance': ['pend', x => x.pending_actions_count > 0],
+  const flags = {'extended-support': ['past', x => x.past_standard_support],   // v1.7.0: no Pending card / flag in tab 1
     'auto-minor-upgrade-off': ['aoff', x => x.auto_minor_upgrade === 'false' || x.auto_minor_upgrade === 'mixed'], 'version-not-returned': ['dep', x => x.deprecated_version], 'support-ending': ['near', x => x.nearing_end_of_support]};
   for (const k of Object.keys(flags)) { await g.click('.card[data-k="' + k + '"]'); await sleep(30);
     const want = D.rows.filter(flags[k][1]).length, fl = await g.evaluate(() => document.getElementById('f-flag').value);
@@ -189,20 +192,22 @@ function parseCsv(t) {
   ok(nu === 0 || await g.evaluate(() => getComputedStyle(document.querySelector('.card[data-k="unknown"] .pop')).display === 'block'), 'Unknown pop-up on focus');
   // CSV picker: untick a column, the choice is remembered, order kept
   await g.click('#f-csv'); await sleep(30);
-  ok(await g.evaluate(n => document.querySelectorAll('#cpk input[type=checkbox]').length === n && [...document.querySelectorAll('#cpk input')].every(b => b.checked), D.cols.length), 'picker: one ticked checkbox per column');
+  const OFF = D.cols_off || [];   // v1.7.0: pending / maintenance-window columns start unticked
+  ok(await g.evaluate((n, off) => document.querySelectorAll('#cpk input[type=checkbox]').length === n && [...document.querySelectorAll('#cpk input')].every(b => b.checked === !off.includes(b.value)), D.cols.length, OFF), 'picker: one checkbox per column, pending / window columns unticked by default');
   await g.click('#cpk input[value="profile"]'); await g.click('#cpk input[value="region"]');
   fs.readdirSync(dl).forEach(f => fs.unlinkSync(path.join(dl, f)));
   await g.click('#cpk [data-a="go"]'); got = [];
   for (let i = 0; i < 50 && !(got = fs.readdirSync(dl).filter(f => f.endsWith('.csv'))).length; i++) await sleep(100);
   const ph = got.length ? parseCsv(fs.readFileSync(path.join(dl, got[0]), 'utf8').slice(1))[0] : [];
-  ok(ph.length === D.cols.length - 2 && JSON.stringify(ph) === JSON.stringify(D.cols.filter(c => c !== 'profile' && c !== 'region')), 'picker: download without unticked columns, standard order');
+  const wantCols = D.cols.filter(c => c !== 'profile' && c !== 'region' && !OFF.includes(c));
+  ok(OFF.length === 6 && JSON.stringify(ph) === JSON.stringify(wantCols), 'picker: download without unticked columns, standard order');
   ok(ph[ph.length - 1 - (D.exc ? 5 : 0)] === 'account_name', 'CSV: account_name is the last column (before the v1.6.0 exception columns)');
   await g.click('#f-csv'); await sleep(30);
   ok(await g.evaluate(() => !document.querySelector('#cpk input[value="profile"]').checked && document.querySelector('#cpk input[value="engine"]').checked), 'picker: unticked columns remembered (localStorage)');
   await g.click('#cpk [data-a="none"]'); ok(await g.evaluate(() => [...document.querySelectorAll('#cpk input')].every(b => !b.checked)), 'picker: None');
   await g.click('#cpk [data-a="all"]'); ok(await g.evaluate(() => [...document.querySelectorAll('#cpk input')].every(b => b.checked)), 'picker: All');
   await g.click('#cpk [data-a="x"]'); ok(await g.evaluate(() => !document.getElementById('cpk')), 'picker: Cancel');
-  await g.evaluate(() => localStorage.removeItem('rds-pc-csv-off'));
+  await g.evaluate(() => localStorage.removeItem('rds-pc-csv-off-v2'));
   // account names: shown as "name (number)" and searchable
   const named = D.accounts.find(a => a.name);
   if (named) {

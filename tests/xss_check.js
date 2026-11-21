@@ -18,6 +18,10 @@ const path = require('path');
   for (const c of await g.$$('#eng-tbl .car, #eng-tbl a.en, #eng-tbl .lnk, #eng-tbl th, #eng-all')) { try { await c.click(); } catch (e) {} }
   try { await g.click('#f-csv'); for (const c of await g.$$('#cpk input')) await c.click(); await g.click('#cpk [data-a="x"]'); } catch (e) {}
   for (const c of await g.$$('#f-gl, #f-sa, details.gdb summary')) { try { await c.click(); } catch (e) {} }
+  // v1.7.0 Pending maintenance tab: cross-links, chip, hostile search
+  for (const c of await g.$$('a.pl')) { try { await g.evaluate(a => { const d = a.closest('details'); if (d) d.open = true; }, c); await c.click(); await g.click('#p-srv-x'); await g.click('#tb-comp'); } catch (e) {} }
+  for (const c of (await g.$$('a.sl')).slice(0, 3)) { try { await g.click('#tb-pend'); await c.click(); } catch (e) {} }
+  try { await g.click('#tb-pend'); for (const v of ['<img src=x data-xss=1 onerror="window.__xss=6">', 'data-xss']) await g.$eval('#p-q', (e, v) => { e.value = v; e.dispatchEvent(new Event('input')); }, v); await g.click('#tb-comp'); } catch (e) {}
   const XQ = ['<img src=x data-xss=1 onerror="window.__xss=9">', '"><svg onload=window.__xss=8>', "'); window.__xss=7; ('", '.*[(+?\\', '&amp;<'];
   for (const v of XQ) { await g.$eval('#q', (e, v) => { e.value = v; e.dispatchEvent(new Event('input')); }, v); await new Promise(r => setTimeout(r, 30)); }
   ok(await g.evaluate(() => !document.getElementById('empty').hidden || document.querySelectorAll('table.main tbody tr[data-i]:not([style*="none"])').length > 0), 'hostile search: empty state or rows, page intact');

@@ -227,14 +227,15 @@ There is no separate `CHANGELOG` file and no `whats-new/` folder in this repo. T
 | `lib/versions.jq` | Shared version parsing and minor-target selection (`vkey`, Oracle patch lines, `minor_select`). Included by the other jq libraries. |
 | `lib/merge.jq` | Offline `--merge`: newest collection wins per account; optional recount of Oracle targets when the patch-line rule changes. |
 | `lib/summary.jq` | Rendering only for the summary script (text, HTML, the four CSVs, alert payload). |
-| `lib/compliance_page.js` | Inlined into the HTML report: filters, cards, engine table, Global / Standalone checkboxes, search, Exceptions filter, CSV export. No network. |
+| `lib/compliance_page.js` | Inlined into the HTML report: the two tabs (v1.7.0), filters, cards, engine table, Global / Standalone checkboxes, search, Exceptions filter, Pending maintenance filters, cross-links, CSV export from both tabs. No network. |
 | `rds_patch_compliance_report.conf.example` | Example `key = value` config, including the `exceptions =` key and account-name lines. |
 | `compliance_exceptions.conf.example` | Example exceptions file (copy to `compliance_exceptions.conf`, which is gitignored, or pass `--exceptions FILE`). |
 | `README.md` | User guide: install, rule, outputs, exceptions, IAM, tests, changelog. |
 | `EXAMPLES.md` | Copy-paste examples, including the Exceptions section for v1.6.0. |
 | `docs/ARCHITECTURE.md` | This document: execution flow, diagrams, file and function reference. |
-| `docs/sample_report_html.png` | Screenshot of the HTML report (summary cards and engine table), used in the README. |
-| `docs/sample_report_pending.png` | Screenshot of HTML detail rows with the pending-maintenance badge. |
+| `docs/sample_report_html.png` | Screenshot of the HTML report, Patch compliance tab (cards and engine table), used in the README. |
+| `docs/sample_report_pending.png` | Screenshot of the Pending maintenance tab (v1.7.0). |
+| `docs/sample_report_pending_filters.png` | Pending maintenance tab with account and due filters on (v1.7.0). |
 | `docs/sample_merged_html.png` | Screenshot of a merged multi-account HTML report. |
 | `samples/` | Checked-in example outputs from the test mock: `sample_report.{txt,csv,html,json}`, `sample_report_regions.csv`, `sample_merged.html`, summary equivalents (`sample_summary*`, including merged accounts / regions CSVs), and `oracle_patch_lines.txt`. |
 | `tests/run_tests.sh` | Main suite for the full report against `tests/mock/aws` (500+ checks: rule, discovery, merge, globals, exceptions, hygiene). Refuses to run unless `aws` on PATH is the mock. |
@@ -245,6 +246,7 @@ There is no separate `CHANGELOG` file and no `whats-new/` folder in this repo. T
 | `tests/browser_check.js` | Headless Chrome checks of the HTML report (filters, totals, CSV export), run when puppeteer-core and Chrome are present. |
 | `tests/browser_exceptions.js` | Headless checks of the v1.6.0 Exception column, filter and Compliant card. |
 | `tests/browser_global.js` | Headless checks of Global / Standalone checkboxes, mismatch badge and search (v1.5.1). |
+| `tests/browser_tabs.js` | Headless checks of the two tabs (v1.7.0): Pending maintenance filters, search, Reset, cross-links, global grouping, CSV from both tabs, mobile width. |
 | `tests/xss_check.js` | Regression: a tampered `--merge` file must not execute script in the HTML. |
 | `tests/fixtures/v130/` | Older `--save-data` files used to prove merge compatibility with v1.3.0 inputs. |
 | `.github/workflows/release.yml` | On a `v*` tag, builds `rds-patch-compliance.zip` (runtime files only) plus a sha256, and publishes the GitHub release. |
@@ -368,7 +370,7 @@ Grouped in the order a run uses them. Nested helpers are marked.
 
 **`lib/summary.jq`** — modes `text`, `html`, `csv_nc`, `csv_summary`, `csv_accounts`, `csv_regions`, `alert`. It reads the already-finalized report and does not recount compliance.
 
-**`lib/compliance_page.js`** — browser-side filters (account, region, engine, status, flag, Global / Standalone, search, Exceptions), live totals, engine table, and CSV download. Works only on the inlined page data; it makes no network calls.
+**`lib/compliance_page.js`** — browser-side filters (account, region, engine, status, flag, Global / Standalone, search, Exceptions), live totals, engine table, and CSV download. Since v1.7.0 it also drives the tab switch and the Pending maintenance tab (its filters, cards, search, Reset, CSV of the visible actions) and the links between the tabs. The action list itself (`pend_flat` in `lib/compliance.jq`, soonest first, global databases kept together) is built in jq and shared by the HTML and the text report. Works only on the inlined page data; it makes no network calls.
 
 ### `rds_patch_compliance_summary.sh`
 
