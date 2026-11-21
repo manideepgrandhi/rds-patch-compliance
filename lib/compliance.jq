@@ -396,6 +396,14 @@ def pend_flat($r):
   | map({d: ([.[].days_until | select(. != null)] | min), rows: sort_by([._ro, ._rg, ._id, (if .days_until == null then 1 else 0 end), .days_until, .action])})
   | sort_by([(if .d == null then 1 else 0 end), .d, .rows[0]._id])
   | [.[].rows[] | del(._u, ._gk, ._ro, ._rg, ._id)];
+# std_actions (v1.7.1): the standard AWS RDS pending maintenance action types, always listed (with 0 when absent).
+def std_actions: ["system-update","db-upgrade","os-upgrade","hardware-maintenance","ca-certificate-rotation"];
+# action_counts($P): [{t, n}] for the standard types (fixed order) + any other type found in the data (by count, name).
+def action_counts($P):
+  ([$P[].action] | group_by(.) | map({key: .[0], value: length}) | from_entries) as $c
+  | [std_actions[] | {t: ., n: ($c[.] // 0)}] + ([$c | to_entries[] | select(.key as $k | std_actions | index([$k]) | not) | {t: .key, n: .value}] | sort_by(-.n, .t));
+# action_strip($P): the same list ordered by count (most first; ties keep the order above), for the one-line strip.
+def action_strip($P): action_counts($P) | to_entries | sort_by(-.value.n, .key) | map(.value);
 # applies_kind: cluster | member | instance | global (Applies to filter).
 def applies_kind: split(" ")[0];
 # dshort: days as short text for the text report ("6d overdue", "today", "in 12d", "optional").
@@ -456,6 +464,7 @@ def text:
     # v1.7.0: every pending maintenance action in one list, soonest first (was a "pending:" line under each server)
     (pend_flat($r) as $P
      | "PENDING MAINTENANCE (\($P | length) action(s) on \([$P[].i] | unique | length) server(s); soonest first; dates in IST)",
+       "  By type: " + (action_strip($P) | map("\(.t) \(.n)") | join(", ")),
        (if ($P | length) == 0 then "  none" else
           "  " + ("DUE" | pad(26)) + ("ACTION" | pad(16)) + ("APPLIES TO" | pad(26)) + ("IDENTIFIER" | pad(32)) + ("ACCOUNT" | pad(13)) + ("REGION" | pad(15))
             + ("AUTO-APPLY (IST)" | pad(24)) + ("FORCED (IST)" | pad(22)) + ("WINDOW (IST)" | pad(24)) + "DESCRIPTION",
@@ -619,7 +628,8 @@ def html_pending($r; $irows; $P):
   | ([$P[] | select(.due == "opt")] | length) as $nopt
   | "<div id=\"tab-pend\" class=\"tab\" role=\"tabpanel\" aria-labelledby=\"tb-pend\" hidden>"
   + "<div class=\"toolbar\" id=\"p-filters\"><select id=\"p-acct\" aria-label=\"Account\"><option value=\"\">All accounts</option></select><select id=\"p-region\" aria-label=\"Region\"><option value=\"\">All regions</option></select>"
-  + "<select id=\"p-engine\" aria-label=\"Engine\"><option value=\"\">All engines</option></select><select id=\"p-action\" aria-label=\"Action type\"><option value=\"\">All actions</option></select>"
+  + "<select id=\"p-engine\" aria-label=\"Engine\"><option value=\"\">All engines</option></select><select id=\"p-action\" aria-label=\"Action type\"><option value=\"\">All actions</option>"
+  + (action_counts($P) | map("<option value=\"\(.t | h)\"\(if .n == 0 then " disabled" else "" end)>\(.t | h) (\(.n))</option>") | join("")) + "</select>"
   + "<select id=\"p-on\" aria-label=\"Applies to\"><option value=\"\">Applies to: any</option><option value=\"cluster\">Cluster</option><option value=\"member\">Member instance</option><option value=\"instance\">Instance</option><option value=\"global\">Global database</option></select>"
   + "<select id=\"p-due\" aria-label=\"Due\"><option value=\"\">Due: any</option><option value=\"over\">Overdue</option><option value=\"d7\">Within 7 days</option><option value=\"d30\">Within 30 days</option><option value=\"later\">Later than 30 days</option><option value=\"opt\">Optional (no date)</option></select>"
   + "<select id=\"p-gl\" aria-label=\"Global or standalone\"><option value=\"\">Global + standalone</option><option value=\"g\">Global only</option><option value=\"s\">Standalone only</option></select>"
@@ -631,6 +641,8 @@ def html_pending($r; $irows; $P):
   + cardx("Overdue / due within 7 days"; $n7; riskc($n7; "bad"); "auto-apply or forced soon"; "p:d7"; ""; false)
   + cardx("Due within 30 days"; $n30; riskc($n30; "warn"); "incl. the 7-day ones"; "p:d30"; ""; false)
   + cardx("Optional"; $nopt; riskc($nopt; "info"); "no date: applies only when you choose"; "p:opt"; ""; false) + "</div>"
+  + "<div class=\"astrip\" id=\"p-types\"><span class=\"muted\">Actions by type:</span> "
+  + (action_strip($P) | map(if .n == 0 then "<span class=\"at z\">\(.t | h) 0</span>" else "<button type=\"button\" class=\"at\" data-t=\"\(.t | h)\" title=\"Show only \(.t | h)\">\(.t | h) <b>\(.n)</b></button>" end) | join(" &middot; ")) + "</div>"
   + (if ($P | length) == 0 then "<p id=\"p-none\" class=\"none\">No pending maintenance. AWS has nothing scheduled or offered for these servers.</p>" else "" end)
   + "<p id=\"p-empty\" class=\"empty\" hidden>No actions match. <button type=\"button\" id=\"p-empty-reset\">Clear filters</button></p>"
   + (if ($P | length) == 0 then "" else
@@ -704,6 +716,7 @@ def html:
   + "a.sl{color:#0d47a1;text-decoration:none}a.sl:hover{text-decoration:underline}tr.gg td:first-child{box-shadow:inset 3px 0 0 #7e57c2}tr.hl td{background:#fff8c4 !important;transition:background .3s}"
   + ".pscroll{overflow-x:auto;max-width:100%}table.ptbl{width:100%;min-width:1100px}table.ptbl td.bad{color:#c62828}table.ptbl td.warn{color:#b26a00}.toolbar input#p-q{width:220px;margin:0}"
   + ".chip{display:inline-flex;align-items:center;gap:4px;background:#e3f0fb;color:#0d47a1;border-radius:12px;padding:3px 4px 3px 10px;font-size:12.5px}.chip[hidden]{display:none}.chip button{border:0;background:none;cursor:pointer;font-size:15px;line-height:1;padding:0 4px;color:#0d47a1}"
+  + ".astrip{font-size:12.5px;margin:0 0 8px;line-height:2}.astrip .at{border:1px solid #c3cad3;background:#fff;border-radius:12px;padding:2px 10px;cursor:pointer;font-size:12.5px;color:#1f2933}.astrip .at:hover{border-color:#232f3e}.astrip .at.on{background:#232f3e;color:#fff;border-color:#232f3e}.astrip .at.z{border:0;background:none;cursor:default;color:#9aa5b1;padding:2px 4px}"
   + ".none{background:#e6f4ea;border-radius:6px;padding:10px 14px;color:#1b5e20;font-weight:600}"
   + "@media (max-width:700px){header,main{padding-left:12px;padding-right:12px}.tabs{padding:0 8px}.tabs button{padding:9px 10px;font-size:13px}.cards.stat .card{min-width:140px}.toolbar input#q,.toolbar input#p-q{width:100%}.toolbar select{max-width:none;flex:1 1 45%}details.eng-sec,#regions,#accounts,#globals,#sources{overflow-x:auto}.escroll{display:block;max-width:100%}}"
   + (if exc_on then ".st.exc{background:#e3f2fd;color:#0d47a1}.xf{font-size:10.5px;margin-top:2px}.excn{background:#fff3e0;border-radius:6px;padding:6px 12px;color:#7a4a00;font-size:12.5px;margin:0 0 8px}" else "" end)

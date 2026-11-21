@@ -99,6 +99,23 @@ function parseCsv(t) {
     ok((await pvis()).length === n30 && await g.evaluate(() => document.getElementById('p-due').value === 'd30' && document.querySelector('#tab-pend .card[data-act="p:d30"]').classList.contains('on')), 'card "Due within 30 days" filters + highlighted');
     await g.click('#tab-pend .card[data-act="p:d30"]'); await sleep(30);
     ok((await pvis()).length === P.length && !(await g.evaluate(() => !!document.querySelector('#tab-pend .card.on'))), 'second click clears it');
+    // v1.7.1: Action dropdown = the 5 standard AWS types (always, with counts; 0 = disabled) + any other type in the data
+    const STD = ['system-update', 'db-upgrade', 'os-upgrade', 'hardware-maintenance', 'ca-certificate-rotation'];
+    const cnt = {}; P.forEach(q => { cnt[q.action] = (cnt[q.action] || 0) + 1; });
+    const extra = Object.keys(cnt).filter(t => !STD.includes(t)).sort((a, b) => cnt[b] - cnt[a] || (a < b ? -1 : 1));
+    const aopts = await g.$$eval('#p-action option', o => o.slice(1).map(x => [x.value, x.textContent, x.disabled]));
+    ok(JSON.stringify(aopts) === JSON.stringify(STD.concat(extra).map(t => [t, t + ' (' + (cnt[t] || 0) + ')', !cnt[t]])), 'Action dropdown: 5 standard types + others, with counts, zero disabled: ' + JSON.stringify(aopts));
+    r.extraTypes = extra;
+    // count-by-type strip: every type once, non-zero clickable (sets Action, highlighted), zero muted
+    const strip = await g.evaluate(() => [...document.querySelectorAll('#p-types .at')].map(x => [x.getAttribute('data-t') || x.textContent.replace(/ 0$/, ''), x.tagName, x.classList.contains('z')]));
+    ok(strip.length === STD.length + extra.length && strip.every(([t, tag, z]) => (cnt[t] ? tag === 'BUTTON' && !z : tag === 'SPAN' && z)), 'strip: every type, non-zero clickable, zero muted: ' + JSON.stringify(strip));
+    const t0 = Object.keys(cnt).sort((a, b) => cnt[a] - cnt[b])[0];
+    await g.click('#p-types .at[data-t="' + t0 + '"]'); await sleep(30);
+    ok((await pvis()).length === cnt[t0] && await g.evaluate(t => document.getElementById('p-action').value === t && document.querySelector('#p-types .at[data-t="' + t + '"]').classList.contains('on'), t0), 'strip click sets Action=' + t0 + ' + highlight');
+    await g.click('#p-reset'); await sleep(30);
+    ok((await pvis()).length === P.length && await g.evaluate(() => document.getElementById('p-action').value === '' && !document.querySelector('#p-types .at.on')), 'Reset clears the strip selection');
+    await g.click('#p-types .at[data-t="' + t0 + '"]'); await sleep(20); await g.click('#p-types .at[data-t="' + t0 + '"]'); await sleep(20);
+    ok((await pvis()).length === P.length, 'second strip click clears it');
     // every filter
     const f1 = async (id, v, fn, label) => { await sel(id, v); const n = (await pvis()).length, want = P.filter(fn).length; ok(n === want, `filter ${label}=${v}: ${n}/${want}`); await sel(id, ''); };
     const x0 = R[P[0].i];

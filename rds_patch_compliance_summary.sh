@@ -18,7 +18,7 @@ set -Eeuo pipefail
 umask 077
 
 readonly SCRIPT_NAME="rds_patch_compliance_summary.sh"
-readonly SCRIPT_VERSION="1.7.0"
+readonly SCRIPT_VERSION="1.7.1"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly SCRIPT_DIR
 FULL="${RDS_PCS_FULL:-$SCRIPT_DIR/rds_patch_compliance_report.sh}"

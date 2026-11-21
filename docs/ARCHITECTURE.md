@@ -235,6 +235,7 @@ There is no separate `CHANGELOG` file and no `whats-new/` folder in this repo. T
 | `docs/ARCHITECTURE.md` | This document: execution flow, diagrams, file and function reference. |
 | `docs/sample_report_html.png` | Screenshot of the HTML report, Patch compliance tab (cards and engine table), used in the README. |
 | `docs/sample_report_pending.png` | Screenshot of the Pending maintenance tab (v1.7.0). |
+| `docs/sample_pending_action_types.png` | Pending maintenance tab: Actions by type strip and the Action list opened (v1.7.1). |
 | `docs/sample_report_pending_filters.png` | Pending maintenance tab with account and due filters on (v1.7.0). |
 | `docs/sample_merged_html.png` | Screenshot of a merged multi-account HTML report. |
 | `samples/` | Checked-in example outputs from the test mock: `sample_report.{txt,csv,html,json}`, `sample_report_regions.csv`, `sample_merged.html`, summary equivalents (`sample_summary*`, including merged accounts / regions CSVs), and `oracle_patch_lines.txt`. |
