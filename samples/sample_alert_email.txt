@@ -1,0 +1,39 @@
+RDS patch compliance: NON-COMPLIANT
+8 non-compliant of 23 servers, 60.9% compliant
+
+Accounts: prod-payments (111111111111), nonprod-shared (222222222222)
+Resources: 23
+Compliant: 14
+Non-compliant: 8
+Unknown: 1
+Pending: 3
+Compliance: 60.9% (14 of 23)
+Rule: NON-COMPLIANT when more than 2 valid minor versions behind. Pending maintenance: 3 servers, 5 actions (details are in the HTML report).
+
+NON-COMPLIANT servers (8):
+
+Account                        Server               Region      Engine             Current → target                                   Reason
+-----------------------------  -------------------  ----------  -----------------  -------------------------------------------------  -----------------------------------------------------------------------------------------------------
+nonprod-shared (222222222222)  dev-aurora-pg15      ap-south-1  aurora-postgresql  15.4 → 15.13                                       7 valid minor versions behind (limit 2)
+prod-payments (111111111111)   inv-mysql            us-east-1   mysql              8.0.36 → 8.0.43                                    6 valid minor versions behind (limit 2); auto minor upgrade is off; standard support ends in 169 days
+prod-payments (111111111111)   legacy-aurora-pg12   us-east-1   aurora-postgresql  12.15 → 12.22                                      6 valid minor versions behind (limit 2); past standard support (Extended Support charges)
+prod-payments (111111111111)   shop-aurora-mysql    us-east-1   aurora-mysql       8.0.mysql_aurora.3.05.2 → 8.0.mysql_aurora.3.10.0  5 valid minor versions behind (limit 2); auto minor upgrade is off on some members
+prod-payments (111111111111)   analytics-pg         us-east-1   postgres           13.18 → 13.22                                      3 valid minor versions behind (limit 2); standard support ends in 119 days
+prod-payments (111111111111)   hr-sql               us-east-1   sqlserver-se       15.00.4410.1.v1 → 15.00.4430.1.v1                  3 valid minor versions behind (limit 2)
+prod-payments (111111111111)   ledger-maz           us-east-1   postgres           16.6 → 16.10                                       3 valid minor versions behind (limit 2)
+prod-payments (111111111111)   reports-aurora-pg14  us-east-1   aurora-postgresql  14.12 → 14.17                                      3 valid minor versions behind (limit 2); auto minor upgrade is off
+
+UNKNOWN (lookup failed or version not returned) (1):
+
+Account                       Server           Region     Engine             Current → target  Reason
+----------------------------  ---------------  ---------  -----------------  ----------------  --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+prod-payments (111111111111)  old-aurora-pg11  us-east-1  aurora-postgresql  11.9 → —          current version not returned by describe-db-engine-versions (deprecated or not offered in us-east-1); no valid upgrade targets known; past standard support (Extended Support charges)
+
+AWS errors (these regions may be incomplete) (2):
+
+Account                        Server  Region        Engine  Current → target  Reason
+-----------------------------  ------  ------------  ------  ----------------  --------------------------------------------------------------------------------
+prod-payments (111111111111)   —       ca-central-1  —       —                 AccessDenied on describe-db-instances: explicit deny in a service control policy
+nonprod-shared (222222222222)  —       ca-central-1  —       —                 AccessDenied on describe-db-instances: explicit deny in a service control policy
+
+rds_patch_compliance_report.sh v1.7.1 · cloudshell-host · 2026-11-27 09:58:51 IST

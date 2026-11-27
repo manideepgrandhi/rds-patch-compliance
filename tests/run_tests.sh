@@ -6,9 +6,17 @@
 # Usage: tests/run_tests.sh [-k]   (-k keeps the temp output dir)
 set -uo pipefail
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-SCRIPT="$HERE/../rds_patch_compliance_report.sh"
+REPO_SCRIPT="$HERE/../rds_patch_compliance_report.sh"
 LIBJQ="$HERE/../lib/compliance.jq"
 OUT="$(mktemp -d /tmp/rpc_tests.XXXXXX)"
+# The script loads rds_patch_compliance_report.conf from its own folder, so the suites run a copy of the tool whose
+# conf holds the v1.7.1 built-in defaults (tests/fixtures/test_defaults.conf). The shipped conf is tested separately.
+BASE_CONF="$HERE/fixtures/test_defaults.conf"
+TOOL="$OUT/tool"; mkdir -p "$TOOL"
+cp "$REPO_SCRIPT" "$HERE/../rds_patch_compliance_summary.sh" "$TOOL/"; cp -r "$HERE/../lib" "$TOOL/"; cp "$BASE_CONF" "$TOOL/rds_patch_compliance_report.conf"
+SCRIPT="$TOOL/rds_patch_compliance_report.sh"
+# mkconf FILE [key = value ...]: a complete conf = the test base plus overrides (the last duplicate wins).
+mkconf() { local f="$1" kv; shift; cp -- "$BASE_CONF" "$f"; for kv in "$@"; do printf '%s\n' "$kv" >>"$f"; done; }
 KEEP=0; [[ "${1:-}" == -k ]] && KEEP=1
 PASS=0; FAIL=0; LISTENER_PID=""
 export MOCK_LOG="$OUT/aws_calls.jsonl"
@@ -45,10 +53,10 @@ chk()  { local d="$1"; shift; if "$@"; then ok "$d"; else bad "$d"; fi; }
 jqt()  { if jq -e "$2" "$OUT/$1.out" >/dev/null 2>&1; then ok "$1 json: $2"; else bad "$1 json: $2"; fi; }
 row()  { jq -c --arg i "$2" '.rows[] | select(.identifier == $i)' "$OUT/$1.out"; }
 rowt() { if row "$1" "$2" | jq -e "$3" >/dev/null 2>&1; then ok "$1 $2: $3"; else bad "$1 $2: $3 (got $(row "$1" "$2" | head -c 400))"; fi; }
-vc()   { jq -n --arg mode vkey_cmp --arg a "$1" --arg b "$2" --argjson now 0 --argjson max_behind 2 --argjson warn_days 180 --argjson top_n 10 \
+vc()   { jq -n --arg mode vkey_cmp --arg a "$1" --arg b "$2" --argjson now 0 --argjson exc_warn_days 14 --argjson max_behind 2 --argjson warn_days 180 --argjson top_n 10 \
             --argjson tagcols '[]' --argjson f '{}' --argjson nc_only false -f "$LIBJQ"; }
 vct()  { local r; r="$(vc "$1" "$3")"; if [[ "$r" == "$2" ]]; then ok "vcmp $1 vs $3 = $2"; else bad "vcmp $1 vs $3 = $r expected $2"; fi; }
-mj()   { local r; r="$(jq -rn --arg mode major --arg a "$2" --arg e "$1" --argjson now 0 --argjson max_behind 2 --argjson warn_days 180 --argjson top_n 10 \
+mj()   { local r; r="$(jq -rn --arg mode major --arg a "$2" --arg e "$1" --argjson now 0 --argjson exc_warn_days 14 --argjson max_behind 2 --argjson warn_days 180 --argjson top_n 10 \
             --argjson tagcols '[]' --argjson f '{}' --argjson nc_only false -f "$LIBJQ")"
          if [[ "$r" == "$3" ]]; then ok "major($1 $2) = $3"; else bad "major($1 $2) = $r expected $3"; fi; }
 
@@ -107,10 +115,10 @@ t ora_any 0 oracle -P prod -r us-east-1 -F json --oracle-any-patch-line
 rowt ora_any ora-mrp ".latest_minor_version == \"${O}2026-07.mrp-2026-07.r2\" and .versions_behind == 2 and (.newer_versions | index(\"${O}2026-07.spb-2026-07.r1\")) != null and (.excluded_targets | length) == 0"
 rowt ora_any ora-r9 '(.newer_versions | length) == 2'
 jqt ora_any '.meta.oracle_any_patch_line == true'
-printf 'oracle_any_patch_line = yes\n' >"$OUT/oal.conf"
+mkconf "$OUT/oal.conf" 'oracle_any_patch_line = yes'
 t ora_conf 0 oracle --config "$OUT/oal.conf" -P prod -r us-east-1 -F json
 rowt ora_conf ora-mrp '.versions_behind == 2'
-vce() { local r; r="$(jq -n --arg mode vcmp_e --arg e "$1" --arg a "$2" --arg b "$4" --argjson now 0 --argjson max_behind 2 --argjson warn_days 180 --argjson top_n 10 \
+vce() { local r; r="$(jq -n --arg mode vcmp_e --arg e "$1" --arg a "$2" --arg b "$4" --argjson now 0 --argjson exc_warn_days 14 --argjson max_behind 2 --argjson warn_days 180 --argjson top_n 10 \
             --argjson tagcols '[]' --argjson f '{}' --argjson nc_only false -f "$LIBJQ")"; if [[ "$r" == "$3" ]]; then ok "vcmp_e $2 vs $4 = $3"; else bad "vcmp_e $2 vs $4 = $r expected $3"; fi; }
 vce oracle-ee "${O}2026-07.mrp-2026-07.r10" 1 "${O}2026-07.mrp-2026-07.r9"
 vce oracle-ee "${O}2026-07.mrp-2026-07.r2" 1 "${O}2026-07.mrp-2026-07.r1"
@@ -140,12 +148,10 @@ printf 'bogus = 1\n' >"$OUT/unk.conf"
 t confunk 1 fleet --config "$OUT/unk.conf";     has confunk err "unknown key 'bogus'"
 printf '# test\nprofiles = prod\nregions = us-east-1\nmax_behind = 5   # comment\nformat = json\n$(touch %s/pwned)\n' "$OUT" >"$OUT/inj.conf"
 t confinj 1 fleet --config "$OUT/inj.conf";     chk "config is parsed, never sourced" test ! -e "$OUT/pwned"
-printf 'profiles = prod\nregions = us-east-1\nmax_behind = 5   # comment\nformat = json\ntag_columns = Owner\n' >"$OUT/c.conf"
+mkconf "$OUT/c.conf" 'profiles = prod' 'regions = us-east-1' 'max_behind = 5   # comment' 'format = json' 'tag_columns = Owner'
 t conf 0 fleet --config "$OUT/c.conf";          jqt conf '.summary.max_behind == 5'; jqt conf '.meta.tag_columns == []'; has conf err 'tag_columns is ignored'
 t confover 0 fleet --config "$OUT/c.conf" --max-behind 1;  jqt confover '.summary.max_behind == 1'
 : >"$MOCK_LOG"
-t confex 0 fleet --config "$HERE/../rds_patch_compliance_report.conf.example" --dry-run
-has confex out 'prod nonprod'; has confex out "-> $HOME/compliance-reports"
 t dryrun 0 fleet "${P2[@]}" --dry-run;         has dryrun out 'describe-db-major-engine-versions'; has dryrun out 'no AWS calls'
 chk "dry-run made no AWS calls" test ! -s "$MOCK_LOG"
 
@@ -352,7 +358,7 @@ jqt nodisc '.summary.region_overview | .mode == "full" and .checked == 14 and .w
 jqt nodisc '.meta.region_discovery.probe_parallel == null and ([.meta.region_status[].status] | unique) == ["scanned"]'
 jqt nodisc '.summary.total == 20 and .summary.compliant == 12'
 chk "nodisc: same rows as with discovery" test "$(jq -c '[.rows[] | [.account_id, .region, .identifier, .compliance_status]] | sort' "$OUT/nodisc.out")" == "$(jq -c '[.rows[] | [.account_id, .region, .identifier, .compliance_status]] | sort' "$OUT/disc.out")"
-printf 'profiles = prod\nall_regions = yes\ndiscover = no\nformat = json\n' >"$OUT/nd.conf"
+mkconf "$OUT/nd.conf" 'profiles = prod' 'all_regions = yes' 'discover = no' 'format = json'
 : >"$MOCK_LOG"
 t nodisc_conf 0 discover --config "$OUT/nd.conf"
 chk "discover = no in config: no probe" test "$(probes)" -eq 0
@@ -417,7 +423,7 @@ hasnt large err 'Argument list too long'
 echo "== alerts (local stubs only)"
 t al_mail 0 fleet "${P2[@]}" --alert-email dba@example.com
 chk "mail sent (subject)" grep -qF 'NON-COMPLIANT:\ 8\ non-compliant\ of\ 22' "$MAIL_SINK"
-chk "mail body is the text report" grep -q '^PER ENGINE / MAJOR VERSION' "$MAIL_SINK"
+chk "mail (no sendmail): text summary only, not the full text report" bash -c "grep -q '^RDS patch compliance: NON-COMPLIANT' '$MAIL_SINK' && ! grep -q '^PER ENGINE / MAJOR VERSION' '$MAIL_SINK'"
 : >"$MAIL_SINK"
 t al_none 0 fleet -P prod -r us-east-1 -e docdb --alert-email dba@example.com
 chk "no alert when all compliant (alert-on noncompliant)" test ! -s "$MAIL_SINK"
@@ -541,7 +547,7 @@ fi
 
 echo "== v1.3.1: merge compatibility (v1.3.0 + v1.3.1 files, report + summary script, duplicate older account)"
 CP="$OUT/compat in"; mkdir -p "$CP"; cp "$HERE"/fixtures/v130/*.json "$CP/"
-SUMS="$HERE/../rds_patch_compliance_summary.sh"
+SUMS="$TOOL/rds_patch_compliance_summary.sh"
 RDS_PCR_NOW=1790000000 MOCK_SCENARIO=fleet "$SCRIPT" -P prod -r us-east-1 --save-data "$CP/prod_v131_report.json" -o "$OUT/cpx" -F json >/dev/null 2>&1
 RDS_PCR_NOW=1790200000 MOCK_SCENARIO=fleet "$SUMS" -P dev -r eu-west-1 --save-data "$CP/dev_v131_summary.json" >/dev/null 2>&1
 CURV=$("$SCRIPT" --version | awk '{print $2}')
@@ -648,7 +654,7 @@ hasnt an_alias err 'AccessDenied|list-account-aliases'
 chk "alias: account_name is the last CSV column and filled" python3 -c 'import csv,sys,glob; r=list(csv.reader(open([f for f in glob.glob(sys.argv[1]+"/*.csv") if "_regions" not in f][0],encoding="utf-8-sig"))); h=r[0]; i=h.index("account_name"); assert i==len(h)-1; assert {(x[0],x[i]) for x in r[1:]}=={("111111111111","prod-core")}, set((x[0],x[i]) for x in r[1:])' "$AN/a"
 chk "alias: json rows carry account_name" jq -e 'all(.rows[]; has("account_name")) and ([.rows[] | select(.account_id == "111111111111") | .account_name] | unique) == ["prod-core"]' "$AN"/a/*.json
 chk "alias: text Accounts line + PER ACCOUNT NAME column" bash -c "grep -q '^Accounts : 111111111111 prod-core (prod), 222222222222 (nonprod)' '$AN'/a/*.txt && grep -A1 '^PER ACCOUNT' '$AN'/a/*.txt | grep -q NAME"
-printf '111111111111 = prod-payments   # comment\n222222222222 = "np \001x"\n' >"$AN/n.conf"
+mkconf "$AN/n.conf"; printf '111111111111 = prod-payments   # comment\n222222222222 = "np \001x"\n' >>"$AN/n.conf"
 t an_conf 0 fleet --config "$AN/n.conf" -P prod -P nonprod -r us-east-1 -r ap-south-1 -F json,html -o "$AN/c"
 chk "config map wins over the alias, comment/quotes/control chars stripped" jq -e '[.meta.accounts[].name] == ["prod-payments", "np x"]' "$AN"/c/*.json
 chk "html shows name (number)" grep -q 'prod-payments (111111111111)' "$AN"/c/*.html
@@ -665,7 +671,7 @@ chk "merge: names carried through, old accounts number only" jq -e '([.meta.acco
 XA='<img src=x data-xss=1 onerror="window.__xss=1">'
 MOCK_ALIAS="$(jq -cn --arg x "$XA" '[$x]')" t an_xss 0 fleet -P prod -r us-east-1 -F html,json -o "$AN/x"
 chk "xss alias: survives into json, escaped in html" bash -c "jq -e '.meta.accounts[0].name | test(\"data-xss\")' '$AN'/x/*.json >/dev/null && ! grep -q '<img src=x data-xss' '$AN'/x/*.html"
-printf '111111111111 = <svg onload=window.__xss=2> data-xss\n' >"$AN/x.conf"
+mkconf "$AN/x.conf"; printf '111111111111 = <svg onload=window.__xss=2> data-xss\n' >>"$AN/x.conf"
 t an_xssc 0 fleet --config "$AN/x.conf" -P prod -r us-east-1 -F html -o "$AN/xc"
 chk "xss config name: escaped in html" bash -c "! grep -q '<svg onload' '$AN'/xc/*.html"
 if command -v node >/dev/null 2>&1 && [[ -x "${CHROME:-/usr/bin/google-chrome}" ]] && NODE_PATH="${NODE_PATH:-}" node -e 'require("puppeteer-core")' 2>/dev/null; then
@@ -741,13 +747,13 @@ printf '111111111111 | db1 | patch | 2028-02-29 | leap day ok\n111111111111 | db
 t exc_nodup 0 fleet -P prod -r us-east-1 -F json --exceptions "$EX/nodup.conf"
 t exc_nofile 1 fleet -P prod -r us-east-1 --exceptions "$EX/does-not-exist.conf"; has exc_nofile err 'Exceptions file not readable'
 # default: compliance_exceptions.conf next to the script (a copy of the tool), absent = off; config key exceptions =
-TC="$OUT/toolcopy"; mkdir -p "$TC"; cp -r "$HERE/../rds_patch_compliance_report.sh" "$HERE/../lib" "$TC/"
+TC="$OUT/toolcopy"; mkdir -p "$TC"; cp -r "$HERE/../rds_patch_compliance_report.sh" "$HERE/../lib" "$TC/"; cp "$BASE_CONF" "$TC/rds_patch_compliance_report.conf"
 PATH="$NOAWS:$PATH" RDS_PCR_NOW=1791000000 "$TC/rds_patch_compliance_report.sh" --merge "$SD1" -F json -o "$EX/def0" 2>"$EX/def0.err"
 chk "exc default: no file next to the script -> off" jq -e '.summary | has("exceptions") | not' "$EX"/def0/*.json
 cp "$EX/ok.conf" "$TC/compliance_exceptions.conf"
 PATH="$NOAWS:$PATH" RDS_PCR_NOW=1791000000 "$TC/rds_patch_compliance_report.sh" --merge "$SD1" -F json -o "$EX/def1" 2>"$EX/def1.err"
 chk "exc default: compliance_exceptions.conf next to the script is used" jq -e '.summary.exceptions.applied == 3' "$EX"/def1/*.json
-printf 'exceptions = %s\n' "$EX/all.conf" >"$EX/c.conf"
+mkconf "$EX/c.conf" "exceptions = $EX/all.conf"
 mg exc_conf 0 --config "$EX/c.conf" --merge "$SD1" -F json -o "$EX/conf"
 chk "exc: config key exceptions = FILE" jq -e '.summary.non_compliant == 0 and .summary.exceptions.applied == 7' "$EX"/conf/*.json
 # collection: the report gets the exceptions, the --save-data file does not change
@@ -762,9 +768,189 @@ if command -v node >/dev/null 2>&1 && [[ -x "${CHROME:-/usr/bin/google-chrome}" 
     chk "browser: existing checks still pass on a report with exceptions ${res:0:300}" test "$rc" -eq 0
 else echo "  skip exceptions browser check (node + puppeteer-core on NODE_PATH + Chrome not found)"; fi
 
+echo "== unreleased: conf file next to the script (settings, required keys, --config, CLI override)"
+# newtool DIR [noconf]: a fresh copy of the tool (scripts + lib); the conf is copied in unless "noconf" is given.
+newtool() { mkdir -p "$1"; cp "$REPO_SCRIPT" "$HERE/../rds_patch_compliance_summary.sh" "$1/"; cp -r "$HERE/../lib" "$1/"
+            [[ "${2:-}" == noconf ]] || cp "$HERE/../rds_patch_compliance_report.conf" "$1/"; }
+SHIP="$OUT/shipped"; newtool "$SHIP"; SHW="$OUT/shipped_cwd"; mkdir -p "$SHW"
+REQ="$(sed -n '/^readonly -a REQUIRED_KEYS=(/,/)$/p' "$REPO_SCRIPT" | sed 's/^readonly -a REQUIRED_KEYS=(//; s/)$//' | tr -s ' \n' '\n' | grep .)"
+SREQ="$(sed -n '/^readonly -a REQUIRED_KEYS=(/,/)$/p' "$HERE/../rds_patch_compliance_summary.sh" | sed 's/^readonly -a REQUIRED_KEYS=(//; s/)$//' | tr -s ' \n' '\n' | grep .)"
+chk "both scripts require the same keys" test "$(sort <<<"$REQ")" = "$(sort <<<"$SREQ")"
+SC="$HERE/../rds_patch_compliance_report.conf"
+chk "shipped conf: every required key appears exactly once" bash -c "for k in $(tr '\n' ' ' <<<"$REQ"); do [[ \$(grep -cE \"^\$k[[:space:]]*=\" '$SC') == 1 ]] || { echo \"\$k\"; exit 1; }; done"
+chk "shipped conf: no setting outside the required list" bash -c "grep -E '^[a-z_]+[[:space:]]*=' '$SC' | sed 's/[[:space:]]*=.*//' | sort | diff - <(tr ' ' '\n' <<<'$(tr '\n' ' ' <<<"$REQ")' | grep . | sort)"
+chk "shipped conf: a ## comment with Allowed/Example sits above every setting" awk '
+    /^##/ { blk = blk $0 "\n"; next }
+    /^[[:space:]]*$/ { blk = ""; next }
+    /^[a-z_]+[[:space:]]*=/ { if (blk == "" ) { print "no comment above: " $0; bad = 1 } else if (blk !~ /Allowed|Example/) { print "no Allowed/Example above: " $0; bad = 1 } blk = ""; next }
+    /^[0-9]{12}[[:space:]]*=/ { blk = ""; next }
+    END { exit bad }' "$SC"
+t_ship() { local name="$1" exp="$2" scen="$3"; shift 3; ( cd "$SHW" && MOCK_SCENARIO="$scen" "$SHIP/rds_patch_compliance_report.sh" "$@" ) >"$OUT/$name.out" 2>"$OUT/$name.err"; local rc=$?
+           if [[ "$rc" == "$exp" ]]; then ok "$name (rc=$rc)"; else bad "$name: rc=$rc expected $exp"; tail -5 "$OUT/$name.err" | sed 's/^/       /'; fi; }
+RDS_PCR_NOW=1790000000 t_ship ship 0 fleet -P prod,nonprod -r us-east-1,ap-south-1
+has ship err "Settings: $SHIP/rds_patch_compliance_report.conf \\(loaded automatically from the script folder\\)"
+chk "shipped conf: csv + html + txt written to ./reports (formats / output_dir / prefix from the conf)" bash -c "cd '$SHW/reports' && ls | grep -cE '^rds_patch_compliance_20260921_194320\.(html|csv|txt)\$|_regions\.csv\$' | grep -qx 4"
+has ship err "Wrote $SHW/reports/rds_patch_compliance_20260921_194320\\.html"
+chk "shipped conf: log_file ./reports/run.log written" grep -q 'Wrote' "$SHW/reports/run.log"
+chk "shipped conf: account names from the conf in the report" grep -q 'prod-payments' "$SHW/reports/rds_patch_compliance_20260921_194320.txt"
+RDS_PCR_NOW=1790000000 t_ship ship_cli 0 fleet -P prod -r us-east-1 -F json -o ""
+chk "CLI -o \"\" prints on the screen instead of the conf's output_dir" jq -e '.summary.total > 0' "$OUT/ship_cli.out"
+newtool "$OUT/noconf" noconf
+MOCK_SCENARIO=fleet "$OUT/noconf/rds_patch_compliance_report.sh" -P prod -r us-east-1 >"$OUT/noconf.out" 2>"$OUT/noconf.err"; chk "no conf next to the script: rc 1" test $? -eq 1
+has noconf err 'Config file not found: .*rds_patch_compliance_report\.conf'
+( MOCK_SCENARIO=fleet "$OUT/noconf/rds_patch_compliance_report.sh" --help >"$OUT/helpnoconf2.out" 2>&1; chk "--help works without a conf" test $? -eq 0 )
+for k in mail_timeout max_behind attach_prefix; do
+    grep -vE "^${k}[[:space:]]*=" "$BASE_CONF" >"$OUT/miss_$k.conf"
+    t "miss_$k" 1 fleet --config "$OUT/miss_$k.conf" -P prod -r us-east-1; has "miss_$k" err "missing required setting\\(s\\): $k "
+done
+grep -vE '^(mail_timeout|warn_days|tz)[[:space:]]*=' "$BASE_CONF" >"$OUT/miss3.conf"
+t miss3 1 fleet --config "$OUT/miss3.conf"; has miss3 err 'missing required setting\(s\): warn_days tz mail_timeout'
+: >"$MOCK_LOG"; chk "missing key stops before any AWS call" test ! -s "$MOCK_LOG"
+mkconf "$OUT/bool.conf" 'all_regions = maybe'; t badbool 1 fleet --config "$OUT/bool.conf"; has badbool err "bool.conf:[0-9]+: 'all_regions' must be yes or no"
+mkconf "$OUT/nofmt.conf" 'formats ='; t nofmt 1 fleet --config "$OUT/nofmt.conf" -P prod -r us-east-1; has nofmt err 'formats is empty'
+mkconf "$OUT/badnum.conf" 'mail_timeout = soon'; t badmt 1 fleet --config "$OUT/badnum.conf" -P prod -r us-east-1; has badmt err 'mail-timeout must be a positive integer'
+mkconf "$OUT/alias.conf" 'profile = prod' 'region = us-east-1' 'Max-Behind = 4' 'ALERT_EMAIL = a@example.com'
+t alias 0 fleet --config "$OUT/alias.conf" -F json; jqt alias '.summary.max_behind == 4'
+mkconf "$OUT/cfg5.conf" 'profiles = prod' 'regions = us-east-1' 'max_behind = 5'
+t cfg5 0 fleet --config "$OUT/cfg5.conf" -F json;   jqt cfg5 '.summary.max_behind == 5'; has cfg5 err 'Settings: .*cfg5\.conf \(from --config\)'
+t cfg5b 0 fleet --config="$OUT/cfg5.conf" -F json;  jqt cfg5b '.summary.max_behind == 5'
+t cfg5cli 0 fleet --config "$OUT/cfg5.conf" --max-behind 3 -F json;  jqt cfg5cli '.summary.max_behind == 3'
+t nocfg 0 fleet -P prod -r us-east-1 -F json;  jqt nocfg '.summary.max_behind == 2'; has nocfg err 'loaded automatically from the script folder'
+mkconf "$OUT/allreg.conf" 'profiles = prod' 'all_regions = yes' 'regions ='
+t cli_r 0 fleet --config "$OUT/allreg.conf" -r us-east-1 --dry-run;   has cli_r out 'regions  : us-east-1 \(queried directly'
+t conf_A 0 fleet --config "$OUT/allreg.conf" --dry-run;               has conf_A out 'regions  : all enabled per account'
+mkconf "$OUT/reg.conf" 'profiles = prod' 'all_regions = no' 'regions = us-east-1'
+t cli_A 0 fleet --config "$OUT/reg.conf" -A --dry-run;                has cli_A out 'regions  : all enabled per account'
+t cli_rA 1 fleet --config "$OUT/reg.conf" -A -r us-east-1 --dry-run;  has cli_rA err 'either --region or --all-regions'
+mkconf "$OUT/mgscope.conf" 'profiles = prod,nonprod' 'all_regions = yes' 'engines = postgres' 'identifiers = zzz*' 'formats = text,json' 'output_dir ='
+mg conf_merge 0 --config "$OUT/mgscope.conf" --merge "$SD1" -F json -o "$OUT/conf_merge"
+mg conf_merge_plain 0 --merge "$SD1" -F json -o "$OUT/conf_merge_plain"
+chk "merge ignores the conf's profiles / regions / engines / identifiers" test "$(jq -c .summary.total "$OUT"/conf_merge/*.json)" = "$(jq -c .summary.total "$OUT"/conf_merge_plain/*.json)"
+mg conf_merge_P 1 --merge "$SD1" -P prod;   has conf_merge_P err 'do not apply'
+mg conf_merge_e 1 --merge "$SD1" -e postgres;   has conf_merge_e err 'do not apply'
+mkconf "$OUT/fmtmerge.conf" 'formats = csv,txt' 'output_dir ='
+mg conf_merge_fmt 0 --config "$OUT/fmtmerge.conf" --merge "$SD1" -o "$OUT/conf_merge_fmt.html"
+chk "merge writes html (not the conf's formats) unless -F is given" test -s "$OUT/conf_merge_fmt.html"
+# settings that used to be hard-coded
+TS="$OUT/tstub"; mkdir -p "$TS"
+printf '#!/usr/bin/env bash\necho "$1" >>"%s/timeout.log"\nshift\nexec "$@"\n' "$OUT" >"$TS/timeout"
+printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >>"%s/curl.log"\ncat >/dev/null\nprintf 200\n' "$OUT" >"$TS/curl"
+printf '#!/usr/bin/env bash\necho "$AWS_RETRY_MODE $AWS_MAX_ATTEMPTS" >>"%s/awsenv.log"\nexec "%s/mock/aws" "$@"\n' "$OUT" "$HERE" >"$TS/aws"
+chmod +x "$TS"/*
+mkconf "$OUT/hard.conf" 'mail_timeout = 7' 'webhook_timeout = 9' 'webhook_retries = 1' 'aws_retry_mode = adaptive' 'max_attempts = 3' 'alert_emails = dba@example.com' "alert_webhooks = $HOOK" 'slack_max_chars = 120'
+PATH="$TS:$PATH" t hard 0 fleet --config "$OUT/hard.conf" -P prod -r us-east-1 -F text -o "$OUT/hard"
+chk "mail_timeout from the conf is the mail command's timeout" grep -qx 7 "$OUT/timeout.log"
+chk "webhook_timeout / webhook_retries from the conf reach curl" grep -q -- '--max-time 9 --retry 1' "$OUT/curl.log"
+chk "aws_retry_mode / max_attempts from the conf reach the AWS CLI" grep -qx 'adaptive 3' "$OUT/awsenv.log"
+mkconf "$OUT/slack120.conf" 'slack_max_chars = 120' "alert_webhooks = $HOOK" 'profiles = prod' 'regions = us-east-1'
+: >"$OUT/webhook.txt"; t slack120 0 fleet --config "$OUT/slack120.conf" -F text -o "$OUT/slack120"
+chk "slack_max_chars from the conf truncates the Slack text" bash -c "grep . '$OUT/webhook.txt' | tail -1 | jq -e '(.text | length) < 400 and (.text | contains(\"truncated\"))' >/dev/null"
+: >"$OUT/awsenv.log"; AWS_RETRY_MODE=legacy PATH="$TS:$PATH" t hardenv 0 fleet --config "$OUT/hard.conf" -P prod -r us-east-1 -F json; chk "AWS_RETRY_MODE in the environment wins over the conf" grep -qx 'legacy 3' "$OUT/awsenv.log"
+# exception_warn_days (flag "expiring soon")
+printf '111111111111 | legacy-aurora-pg12 | patch | 2026-09-26 | in five days\n' >"$OUT/exp5.conf"
+mkconf "$OUT/ew14.conf" 'exception_warn_days = 14'; mkconf "$OUT/ew3.conf" 'exception_warn_days = 3'
+RDS_PCR_NOW=1790000000 PATH="$NOAWS:$PATH" t ew14 0 fleet --config "$OUT/ew14.conf" --merge "$SD1" --exceptions "$OUT/exp5.conf" -F json -o "$OUT/ew14"
+RDS_PCR_NOW=1790000000 PATH="$NOAWS:$PATH" t ew3 0 fleet --config "$OUT/ew3.conf" --merge "$SD1" --exceptions "$OUT/exp5.conf" -F json -o "$OUT/ew3"
+chk "exception_warn_days = 14: an exception ending in 5 days is 'expiring soon'" jq -e '[.rows[] | select(.identifier == "legacy-aurora-pg12") | .exception_flag] == ["expiring soon"]' "$OUT"/ew14/*.json
+chk "exception_warn_days = 3: the same exception is not flagged" jq -e '[.rows[] | select(.identifier == "legacy-aurora-pg12") | .exception_flag] == [""]' "$OUT"/ew3/*.json
+
+echo "== unreleased: HTML alert e-mail (fake sendmail), mail / mailx fallback, webhooks unchanged"
+MAILPY="$HERE/check_alert_mime.py"
+SMD="$OUT/sm"; mkdir -p "$SMD/bin"
+cat >"$SMD/bin/sendmail" <<'SM'
+#!/usr/bin/env bash
+{ printf 'ARGS:'; printf ' %q' "$@"; printf '\n'; } >>"${SENDMAIL_ARGS:?}"
+cat >"${SENDMAIL_MSG:?}"
+SM
+chmod +x "$SMD/bin/sendmail"
+# ISO: a PATH with every system tool except mail / mailx / sendmail / aws (so the fallback order can be tested)
+ISO="$OUT/iso"; mkdir -p "$ISO"
+for d in /usr/bin /bin; do for f in "$d"/*; do b="${f##*/}"; case "$b" in mail|mailx|sendmail|aws|mailq) continue ;; esac; [[ -e "$ISO/$b" ]] || ln -s "$f" "$ISO/$b" 2>/dev/null; done; done
+em() {   # em <name> <rc> <scenario> [args...]: run with the fake sendmail first on PATH
+    local name="$1"; shift
+    SENDMAIL_MSG="$SMD/$name.eml" SENDMAIL_ARGS="$SMD/$name.args" PATH="$SMD/bin:$PATH" RDS_PCR_NOW=1790000000 t "$name" "$@"
+}
+rm -rf "$SMD/rep1"
+em em1 0 fleet "${P2[@]}" -F html,csv -o "$SMD/rep1" --alert-email dba@example.com,oncall@example.com --alert-from rds@example.com
+chk "mime: multipart/mixed { alternative { text, html }, patch_compliance_2026-09-21.html + .csv } = the written files" python3 "$MAILPY" mixed "$SMD/em1.eml" "$SMD/rep1" --nc 8 --date 2026-09-21
+chk "mime: sendmail called with -t -oi" grep -qx 'ARGS: -t -oi' "$SMD/em1.args"
+chk "mime: From / To / Subject / MIME-Version headers" bash -c "sed -n '1,/^\$/p' '$SMD/em1.eml' | grep -qx 'From: rds@example.com' && sed -n '1,/^\$/p' '$SMD/em1.eml' | grep -qx 'To: dba@example.com,oncall@example.com' && sed -n '1,/^\$/p' '$SMD/em1.eml' | grep -q '^Subject: \[rds_patch_compliance\] NON-COMPLIANT: 8 non-compliant of 22, ' && grep -qx 'MIME-Version: 1.0' '$SMD/em1.eml'"
+python3 "$MAILPY" part "$SMD/em1.eml" html >"$SMD/em1.html"; python3 "$MAILPY" part "$SMD/em1.eml" text >"$SMD/em1.txt"
+chk "mime: the regions CSV is not attached" bash -c "! grep -q '_regions' '$SMD/em1.eml'"
+chk "mime: failures table has UNKNOWN rows, 'Current -> target' and a reason" bash -c "grep -q 'old-aurora-pg11' '$SMD/em1.html' && grep -q '15.4' '$SMD/em1.html' && grep -q '7 valid minor versions behind (limit 2)' '$SMD/em1.html'"
+chk "mime: Pending is a count only (no pending action list)" bash -c "grep -q '>Pending<' '$SMD/em1.html' && ! grep -qiE 'db-upgrade|auto-apply|system-update|os-upgrade' '$SMD/em1.html' '$SMD/em1.txt'"
+chk "mime: no report paths in either body" bash -c "! grep -qF '$SMD' '$SMD/em1.html' '$SMD/em1.txt'"
+chk "mime: text part lists the same NON-COMPLIANT servers as the report" bash -c "[[ \$(grep -cE '^[a-z0-9-]+ \(([0-9]{12})\)|^(prod-core|222222222222) ' '$SMD/em1.txt') -ge 8 ]]"
+chk "mime: escaping (identifier / note / AWS error text)" python3 "$MAILPY" escape "$HERE/../lib/alert_email.jq"
+rm -rf "$SMD/rep2"; em em_csv 0 fleet "${P2[@]}" -F html,csv -o "$SMD/rep2" --alert-email dba@example.com --attach-html no
+chk "attach_html = no: only the csv is attached" python3 "$MAILPY" mixed "$SMD/em_csv.eml" "$SMD/rep2" --parts csv --date 2026-09-21
+em em_none 0 fleet "${P2[@]}" -F text --alert-email dba@example.com --attach-html no --attach-csv no
+chk "both attach off: multipart/alternative only" python3 "$MAILPY" mixed "$SMD/em_none.eml" --parts none
+em em_pre 0 fleet "${P2[@]}" -F text --alert-email dba@example.com --attach-prefix acme-patch
+chk "attach_prefix: --attach-prefix names the attachments; nothing written (rendered on the fly)" python3 "$MAILPY" mixed "$SMD/em_pre.eml" --prefix acme-patch --date 2026-09-21
+mkconf "$OUT/em_conf.conf" 'alert_emails = conf@example.com' 'attach_csv = no' 'attach_prefix = from-conf' 'formats = html' "output_dir = $SMD/rep3"
+rm -rf "$SMD/rep3"; em em_conf 0 fleet --config "$OUT/em_conf.conf" "${P2[@]}"
+chk "conf keys alert_emails / attach_csv / attach_prefix drive the e-mail" python3 "$MAILPY" mixed "$SMD/em_conf.eml" "$SMD/rep3" --parts html --prefix from-conf --date 2026-09-21
+chk "conf alert_emails: the recipient is the conf's" grep -qx 'To: conf@example.com' "$SMD/em_conf.eml"
+em em_ok 0 fleet -P prod -r us-east-1 -e docdb -F text --alert-email dba@example.com --alert-on always
+chk "all compliant (alert_on = always): green banner, 'No NON-COMPLIANT servers.'" python3 "$MAILPY" mixed "$SMD/em_ok.eml" --status COMPLIANT --nc 0 --date 2026-09-21
+rm -f "$SMD/em_none2.eml"; em em_quiet 0 fleet -P prod -r us-east-1 -e docdb -F text --alert-email dba@example.com
+chk "alert_on = noncompliant: no e-mail when everything is compliant" test ! -e "$SMD/em_quiet.eml"
+em em_err 0 discover -P prod -A -F text --alert-email dba@example.com
+python3 "$MAILPY" part "$SMD/em_err.eml" html >"$SMD/em_err.html"
+chk "AWS errors table: the region with the error, the short reason" bash -c "grep -q 'AWS errors' '$SMD/em_err.html' && grep -q 'ca-central-1' '$SMD/em_err.html' && grep -q 'AccessDenied on describe-db-instances' '$SMD/em_err.html'"
+em em_test 0 fleet --alert-test --alert-email dba@example.com
+chk "--alert-test over sendmail: alternative with text 'Test alert from'" bash -c "python3 '$MAILPY' part '$SMD/em_test.eml' text | grep -q '^Test alert from' && python3 '$MAILPY' part '$SMD/em_test.eml' html | grep -q 'TEST'"
+# fallbacks: sendmail > mail > mailx (text summary only)
+: >"$MAIL_SINK"; rm -f "$SMD/em_pref.eml"
+em em_pref 0 fleet "${P2[@]}" -F text --alert-email dba@example.com
+chk "sendmail is preferred over mail" bash -c "test -s '$SMD/em_pref.eml' && test ! -s '$MAIL_SINK'"
+: >"$MAIL_SINK"; rm -f "$SMD/mail_only.eml"
+t em_mail 0 fleet "${P2[@]}" -F text --alert-email dba@example.com --alert-from rds@example.com
+chk "mail (no sendmail): text summary only, From via -r, no MIME" bash -c "grep -q '^ARGS: -r rds@example.com -s .*NON-COMPLIANT.* -- dba@example.com' '$MAIL_SINK' && grep -q '^RDS patch compliance: NON-COMPLIANT' '$MAIL_SINK' && ! grep -qiE 'multipart|base64|<html' '$MAIL_SINK'"
+has em_mail err 'mail sends the text summary only'
+MXB="$OUT/mxbin"; mkdir -p "$MXB"; printf '#!/usr/bin/env bash\n{ printf "ARGS:"; printf " %%q" "$@"; printf "\\n"; cat; } >>"%s/mailx.txt"\n' "$OUT" >"$MXB/mailx"; chmod +x "$MXB/mailx"
+PATH="$MXB:$ISO" RDS_PCR_NOW=1790000000 MOCK_SCENARIO=fleet bash -c "PATH='$HERE/mock:$MXB:$ISO'; '$SCRIPT' ${P2[*]} -F text --alert-email dba@example.com" >"$OUT/em_mailx.out" 2>"$OUT/em_mailx.err"
+chk "mailx only: text summary only" bash -c "grep -q '^ARGS: -s .*NON-COMPLIANT.* -- dba@example.com' '$OUT/mailx.txt' && grep -q '^RDS patch compliance: NON-COMPLIANT' '$OUT/mailx.txt'"
+PATH="$HERE/mock:$ISO" RDS_PCR_NOW=1790000000 MOCK_SCENARIO=fleet "$SCRIPT" "${P2[@]}" -F text --alert-email dba@example.com >"$OUT/em_nomail.out" 2>"$OUT/em_nomail.err"; chk "no mail command at all: the run still succeeds (rc 0)" test $? -eq 0
+has em_nomail err 'no mail, mailx or sendmail found'
+# webhooks are unchanged: Slack text = '*subject*' + the full text report + the report file paths
+: >"$OUT/webhook.txt"; rm -rf "$SMD/rep4"
+em em_hook 0 fleet "${P2[@]}" -F text,csv -o "$SMD/rep4" --alert-webhook "$HOOK" --alert-email dba@example.com
+chk "slack payload: full text report + 'Report files:' paths (unchanged)" bash -c "grep . '$OUT/webhook.txt' | tail -1 | jq -e '(.text | contains(\"PER ENGINE / MAJOR VERSION\")) and (.text | contains(\"Report files:\")) and (.text | contains(\"$SMD/rep4/\"))' >/dev/null"
+chk "the e-mail of the same run has no report paths" bash -c "python3 '$MAILPY' part '$SMD/em_hook.eml' text | grep -qF '$SMD' && exit 1 || exit 0"
+
+echo "== unreleased: report files are byte-identical to the v1.7.1 release (same data, equivalent settings)"
+if git -C "$HERE/.." rev-parse -q --verify 'v1.7.1^{commit}' >/dev/null 2>&1; then
+    OLD="$OUT/v171"; mkdir -p "$OLD"; git -C "$HERE/.." archive v1.7.1 | tar -x -C "$OLD"
+    NEW="$OUT/v180"; newtool "$NEW"
+    printf '111111111111 = prod-payments\n222222222222 = nonprod-shared\n' >"$OUT/names_only.conf"   # the shipped conf's names, as an old-style conf
+    for scen in fleet oracle discover global; do
+        rm -rf "$OUT/cmp_o_$scen" "$OUT/cmp_n_$scen"; mkdir -p "$OUT/cmp_n_$scen"
+        ( RDS_PCR_NOW=1790000000 MOCK_SCENARIO=$scen "$OLD/rds_patch_compliance_report.sh" --config "$OUT/names_only.conf" -P prod,nonprod -A -F csv,html,text,json -o "$OUT/cmp_o_$scen" ) >/dev/null 2>&1
+        ( cd "$OUT/cmp_n_$scen" && RDS_PCR_NOW=1790000000 MOCK_SCENARIO=$scen "$NEW/rds_patch_compliance_report.sh" -P prod,nonprod -A -F csv,html,text,json -o "$OUT/cmp_n_$scen/r" ) >/dev/null 2>&1
+        nf="$(find "$OUT/cmp_o_$scen" -type f | wc -l)"
+        chk "v1.7.1 vs new ($scen): $nf files, same names and identical bytes" bash -c "[[ $nf -ge 5 ]] && diff -r '$OUT/cmp_o_$scen' '$OUT/cmp_n_$scen/r'"
+    done
+    # formats / output_dir / prefix / tz taken from the shipped conf (no -F / -o on the command line)
+    rm -rf "$OUT/cmp_c_o" "$OUT/cmp_c_n"; mkdir -p "$OUT/cmp_c_n"
+    ( RDS_PCR_NOW=1790000000 MOCK_SCENARIO=fleet "$OLD/rds_patch_compliance_report.sh" --config "$OUT/names_only.conf" -P prod,nonprod -r us-east-1,ap-south-1 -F csv,html,text -o "$OUT/cmp_c_o" --tz Asia/Kolkata --prefix rds_patch_compliance -l "$OUT/cmp_c_o.log" ) >/dev/null 2>&1
+    ( cd "$OUT/cmp_c_n" && RDS_PCR_NOW=1790000000 MOCK_SCENARIO=fleet "$NEW/rds_patch_compliance_report.sh" -P prod,nonprod -r us-east-1,ap-south-1 ) >/dev/null 2>&1
+    chk "v1.7.1 with flags vs new with the shipped conf only: identical files" bash -c "diff -r '$OUT/cmp_c_o' '$OUT/cmp_c_n/reports' | grep -v 'Only in .*/reports: run.log' | grep -c . | grep -qx 0"
+    # Slack and JSON webhook payloads are the same as before
+    for fmtw in slack json; do
+        : >"$OUT/webhook.txt"; rm -rf "$OUT/cmp_w"; mkdir -p "$OUT/cmp_w"
+        ( RDS_PCR_NOW=1790000000 MOCK_SCENARIO=fleet "$OLD/rds_patch_compliance_report.sh" --config "$OUT/names_only.conf" "${P2[@]}" -F text,csv -o "$OUT/cmp_w" --alert-webhook "$HOOK" --alert-webhook-format $fmtw ) >/dev/null 2>&1
+        cp "$OUT/webhook.txt" "$OUT/cmp_w_old.$fmtw"; : >"$OUT/webhook.txt"; rm -rf "$OUT/cmp_w"; mkdir -p "$OUT/cmp_w"
+        ( cd "$OUT" && RDS_PCR_NOW=1790000000 MOCK_SCENARIO=fleet "$NEW/rds_patch_compliance_report.sh" "${P2[@]}" -F text,csv -o "$OUT/cmp_w" --alert-webhook "$HOOK" --alert-webhook-format $fmtw ) >/dev/null 2>&1
+        chk "v1.7.1 vs new: $fmtw webhook payload identical" bash -c "[[ -s '$OUT/cmp_w_old.$fmtw' ]] && cmp '$OUT/cmp_w_old.$fmtw' '$OUT/webhook.txt'"
+    done
+else echo "  skip byte-identical check against v1.7.1 (git tag v1.7.1 not available)"; fi
+
 echo "== hygiene"
-chk "shellcheck script" shellcheck "$SCRIPT"
+chk "shellcheck script" shellcheck "$REPO_SCRIPT"
 chk "shellcheck tests" shellcheck "$HERE/run_tests.sh" "$HERE/validate_cli.sh"
+chk "python check script parses" python3 -B -c "import ast,sys; ast.parse(open(sys.argv[1]).read())" "$HERE/check_alert_mime.py"
 AFTER="$(cd "$HERE/.." && find . -path ./.git -prune -o -print | sort)"
 chk "no files written into the tool folder" test "$BEFORE" = "$AFTER"
 

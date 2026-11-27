@@ -27,19 +27,32 @@ LIB="${RDS_PCR_LIB:-$SCRIPT_DIR/lib}/compliance.jq"
 MERGE_LIB="${RDS_PCR_LIB:-$SCRIPT_DIR/lib}/merge.jq"
 PAGE_JS="${RDS_PCR_LIB:-$SCRIPT_DIR/lib}/compliance_page.js"
 readonly DATA_SCHEMA="rds_patch_compliance_data" DATA_SCHEMA_VERSION=1
+EMAIL_LIB="${RDS_PCR_LIB:-$SCRIPT_DIR/lib}/alert_email.jq"
+readonly CONFIG_NAME="rds_patch_compliance_report.conf"   # loaded from $SCRIPT_DIR (required; --config FILE replaces it)
+# Named constants: unit facts and fixed limits, not settings (settings live only in the conf file).
+readonly MAX_PROBE_PARALLEL=32 MAX_NAME_CHARS=64
+# Every key the conf file must contain (a value may be empty where the conf says so). Order = the conf file.
+# Shipped spelling (plural list keys); the singular forms profile, region, engine, identifier, format, alert_email and
+# alert_webhook are accepted as the same setting, and hyphens work like underscores.
+readonly -a REQUIRED_KEYS=(profiles regions all_regions discover probe_parallel engines identifiers
+    max_behind warn_days non_compliant_only oracle_any_patch_line fail_on_noncompliant exceptions
+    formats output_dir prefix tz log_file verbose
+    alert_emails alert_from alert_on attach_html attach_csv attach_prefix mail_timeout
+    alert_webhooks alert_webhook_format slack_max_chars webhook_timeout webhook_retries
+    aws_timeout max_attempts aws_retry_mode exception_warn_days)
 
 if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 4) )); then
     echo "$SCRIPT_NAME: bash 4.4+ required (found $BASH_VERSION)" >&2; exit 2
 fi
 
 # ----------------------------------------------------------------------------
-# Defaults (a --config file overrides them, command-line options override both)
+# Settings: empty on purpose. Every value comes from the conf file (load_config); CLI options override it.
 # ----------------------------------------------------------------------------
 PROFILES=()
 REGIONS=()
-ALL_REGIONS=0
-DISCOVER=1
-PROBE_PARALLEL=8
+ALL_REGIONS=""
+DISCOVER=""
+PROBE_PARALLEL=""
 ENGINES=()
 IDENTIFIERS=()
 TAG_COLUMNS=()   # tag columns are no longer shown (v1.4.0); -T / tag_columns are accepted and ignored
@@ -47,28 +60,30 @@ TAG_IGNORED=0
 FORMATS=()
 FORMATS_SET=0
 OUTPUT_DIR=""
-PREFIX="rds_patch_compliance"
-DISPLAY_TZ="Asia/Kolkata"
-MAX_BEHIND=2
-WARN_DAYS=180
+PREFIX=""
+DISPLAY_TZ=""
+MAX_BEHIND=""
+WARN_DAYS=""
 TOP_N=10; TOP_SET=0   # --top is a deprecated no-op (v1.3.1)
-NC_ONLY=0
-ORACLE_ANY_LINE=0
-FAIL_ON_NC=0
-readonly SLACK_MAX_CHARS=35000
+NC_ONLY=""
+ORACLE_ANY_LINE=""
+FAIL_ON_NC=""
+SLACK_MAX_CHARS=""; WEBHOOK_TIMEOUT=""; WEBHOOK_RETRIES=""; AWS_RETRY_MODE_SETTING=""; EXC_WARN_DAYS=""
 LOG_FILE=""
-CONFIG_FILE=""
+CONFIG_FILE=""; CONFIG_AUTO=0; HELP_MODE=0
 declare -A ACCOUNT_NAMES=()   # config: 123456789012 = name (display only)
-AWS_TIMEOUT=30
-MAX_ATTEMPTS=5
+declare -A CLI_SET=()         # settings given on the command line (they replace what the conf said)
+AWS_TIMEOUT=""
+MAX_ATTEMPTS=""
 KEEP_WORKDIR=0
 DRY_RUN=0
 VERBOSE=0
 ALERT_EMAILS=()
 ALERT_WEBHOOKS=()
-ALERT_ON="noncompliant"
-ALERT_WEBHOOK_FORMAT="slack"
+ALERT_ON=""
+ALERT_WEBHOOK_FORMAT=""
 ALERT_FROM=""
+ATTACH_HTML=""; ATTACH_CSV=""; ATTACH_PREFIX=""; MAIL_TIMEOUT=""
 ALERT_TEST=0
 SAVE_DATA=0
 SAVE_DATA_FILE=""
@@ -101,7 +116,7 @@ _log() {
     local level="$1"; shift
     local line; line="$(_ts) [$level] $*"
     printf '%s\n' "$line" >&2
-    if [[ -n "$LOG_FILE" && "$DRY_RUN" -eq 0 ]]; then printf '%s\n' "$line" >>"$LOG_FILE" 2>/dev/null || true; fi
+    if [[ -n "$LOG_FILE" && "$DRY_RUN" -eq 0 ]]; then { printf '%s\n' "$line" >>"$LOG_FILE"; } 2>/dev/null || true; fi
 }
 # Level wrappers; log_debug prints only with -v.
 log_info()  { _log INFO "$@"; }
@@ -114,6 +129,14 @@ die() { local code="$1"; shift; log_error "$@"; exit "$code"; }
 # ----------------------------------------------------------------------------
 # Usage
 # ----------------------------------------------------------------------------
+# cur VAR: the current value of a setting for --help (lists joined by commas, 1/0 shown as yes/no, empty as "(empty)").
+cur() {
+    local n="$1" v; local -n _c="$n"
+    case "$(declare -p "$n" 2>/dev/null)" in "declare -a"*) v="$(IFS=,; printf '%s' "${_c[*]}")" ;; *) v="${_c}" ;; esac
+    case "$n" in ALL_REGIONS|DISCOVER|NC_ONLY|ORACLE_ANY_LINE|FAIL_ON_NC|VERBOSE|ATTACH_HTML|ATTACH_CSV)
+        case "$v" in 1) v=yes ;; 0) v=no ;; esac ;; esac
+    printf '%s' "${v:-(empty)}"
+}
 # usage: print the --help text.
 usage() {
     cat <<USAGE
@@ -121,53 +144,66 @@ $SCRIPT_NAME v$SCRIPT_VERSION - minor-version patch compliance report for AWS da
 
 Usage: $SCRIPT_NAME [options]
 
+Settings: every value comes from the conf file next to the script ($CONFIG_NAME);
+  --config FILE uses another complete copy instead. An option below overrides one value for this run.
+  In this help [conf key = value] shows what the conf file currently says.
+
 Scope:
-  -P, --profile NAME        AWS CLI profile / account; repeatable or comma-separated (default: default chain)
-  -r, --region REGION       Region(s); repeatable or comma-separated (default: env / profile region)
-  -A, --all-regions         Every region enabled in each account (ec2 describe-regions). Each region is first
-                            probed (2 one-page calls, in parallel); only regions with a DB instance or cluster
-                            are scanned in full. A probe that fails (AccessDenied / SCP / timeout) is reported
-                            as an error and that region is still scanned in full - never skipped silently
-      --no-discover         With -A: no probe, scan every enabled region in full (the pre-1.2 behaviour)
-      --probe-parallel N    Regions probed at the same time (default: 8, 1-32)
+  -P, --profile NAME        AWS CLI profile / account; repeatable or comma-separated  [profiles = $(cur PROFILES)]
+  -r, --region REGION       Region(s); repeatable or comma-separated; replaces all_regions  [regions = $(cur REGIONS)]
+  -A, --all-regions         Every region enabled in each account (ec2 describe-regions)  [all_regions = $(cur ALL_REGIONS)].
+                            Each region is first probed (2 one-page calls, in parallel); only regions with a DB
+                            instance or cluster are scanned in full. A probe that fails (AccessDenied / SCP / timeout)
+                            is reported as an error and that region is still scanned in full - never skipped silently
+      --no-discover         With -A: no probe, scan every enabled region in full  [discover = $(cur DISCOVER)]
+      --probe-parallel N    Regions probed at the same time, 1-$MAX_PROBE_PARALLEL  [probe_parallel = $(cur PROBE_PARALLEL)]
   -e, --engine GLOB         aurora-postgresql, aurora-mysql, postgres, mysql, mariadb, 'sqlserver-*',
-                            'oracle-*', docdb, neptune (globs * ?, case-insensitive)      [repeatable]
+                            'oracle-*', docdb, neptune (globs * ?, case-insensitive)      [repeatable]  [engines = $(cur ENGINES)]
   -i, --identifier GLOB     cluster / instance identifier (a cluster also matches by member) [repeatable]
+                            [identifiers = $(cur IDENTIFIERS)]
 
 Compliance:
       --max-behind N        COMPLIANT when RDS lists at most N valid minor upgrade targets for the
-                            current version (default: 2; N+1 or more = NON-COMPLIANT)
-      --warn-days N         Flag majors whose standard support ends within N days (default: 180)
-      --non-compliant-only  Show only NON-COMPLIANT rows (the summary still counts everything)
+                            current version (N+1 or more = NON-COMPLIANT)  [max_behind = $(cur MAX_BEHIND)]
+      --warn-days N         Flag majors whose standard support ends within N days  [warn_days = $(cur WARN_DAYS)]
+      --non-compliant-only  Show only NON-COMPLIANT rows (the summary still counts everything)  [non_compliant_only = $(cur NC_ONLY)]
       --oracle-any-patch-line
                             Oracle: also count targets on OTHER patch lines (e.g. spb when the server is on mrp).
-                            Default off: only the same line counts (mrp->mrp, rur->rur, plain RU->plain RU),
+                            Off: only the same line counts (mrp->mrp, rur->rur, plain RU->plain RU),
                             matching the RDS console Modify page. See README "Oracle versions".
-      --fail-on-noncompliant  Exit 5 when any NON-COMPLIANT server is found (default: exit 0)
+                            [oracle_any_patch_line = $(cur ORACLE_ANY_LINE)]
+      --fail-on-noncompliant  Exit 5 when any NON-COMPLIANT server is found  [fail_on_noncompliant = $(cur FAIL_ON_NC)]
       --exceptions FILE     Compliance exceptions (v1.6.0): lines "account_id | identifier | scope | expires | reason";
                             a listed NON-COMPLIANT server (scope patch) shows COMPLIANT (EXCEPTION) and counts as
                             compliant until the expiry date. UNKNOWN stays UNKNOWN; the exception is still listed.
-                            Default: compliance_exceptions.conf next to the script, if present (none = off).
+                            Empty in the conf = compliance_exceptions.conf next to the script, if present.
                             Any malformed line stops the run. See compliance_exceptions.conf.example
+                            [exceptions = $(cur EXC_FILE)]
 
 Report:
-  -F, --format LIST         text,csv,json,html (default: text). Several formats need -o
+  -F, --format LIST         text,csv,json,html. Several formats need -o  [formats = $(cur FORMATS)]
   -o, --output-dir DIR      Write <prefix>[_<account>]_YYYYmmdd_HHMMSS.<ext> files into DIR (the account number
-                            is in the name when one account was scanned). With --merge, -o FILE.html names the file
+                            is in the name when one account was scanned). -o "" prints one format on the screen.
+                            With --merge, -o FILE.html names the file  [output_dir = $(cur OUTPUT_DIR)]
       --save-data [FILE.json]  Also write the raw data (accounts, collected_at UTC, regions with databases,
                             per database engine / current + latest version / status / pending maintenance) for
                             --merge. Default: rds_patch_<ACCOUNTID>_<YYYYMMDD>.json per account, in -o DIR or .
-      --prefix NAME         File name prefix (default: rds_patch_compliance)
+      --prefix NAME         File name prefix  [prefix = $(cur PREFIX)]
       --top N               Deprecated in v1.3.1 (the "most behind" list was removed); accepted and ignored
-      --tz ZONE             Second time zone for the generated time (default: Asia/Kolkata)
-  -l, --log-file FILE       Append log lines to FILE
+      --tz ZONE             Second time zone for the generated time  [tz = $(cur DISPLAY_TZ)]
+  -l, --log-file FILE       Append log lines to FILE  [log_file = $(cur LOG_FILE)]
 
 Alerts (optional):
-      --alert-email ADDR    E-mail the text report (mail/mailx/sendmail)        [repeatable]
-      --alert-webhook URL   POST to a webhook via curl                         [repeatable]
-      --alert-webhook-format F  slack | json                                    (default: slack)
-      --alert-on WHEN       noncompliant (NON-COMPLIANT found or AWS errors) | always (default: noncompliant)
-      --alert-from ADDR     From address for e-mail
+      --alert-email ADDR    E-mail the summary (sendmail: HTML + text + attachments; mail/mailx: text only) [repeatable]
+                            [alert_emails = $(cur ALERT_EMAILS)]
+      --alert-webhook URL   POST to a webhook via curl                         [repeatable]  [alert_webhooks = $(cur ALERT_WEBHOOKS)]
+      --alert-webhook-format F  slack | json  [alert_webhook_format = $(cur ALERT_WEBHOOK_FORMAT)]
+      --alert-on WHEN       noncompliant (NON-COMPLIANT found or AWS errors) | always  [alert_on = $(cur ALERT_ON)]
+      --alert-from ADDR     From address for e-mail  [alert_from = $(cur ALERT_FROM)]
+      --attach-html YES|NO  Attach the HTML report to the e-mail (sendmail only)  [attach_html = $(cur ATTACH_HTML)]
+      --attach-csv YES|NO   Attach the per-server CSV to the e-mail (sendmail only)  [attach_csv = $(cur ATTACH_CSV)]
+      --attach-prefix NAME  Short name of the attachments: NAME_YYYY-MM-DD.html / .csv  [attach_prefix = $(cur ATTACH_PREFIX)]
+      --mail-timeout SEC    Stop the mail command after SEC seconds  [mail_timeout = $(cur MAIL_TIMEOUT)]
       --alert-test          Send a test alert and exit
 
 Merge (offline, v1.3.0):
@@ -175,22 +211,23 @@ Merge (offline, v1.3.0):
                             no AWS CLI needed (jq only; works in Git Bash on Windows). A DIR means every
                             --save-data JSON in it. The same account in two files: the newer collection wins.
                             Days to maintenance / end of support are counted from merge time.
-                            Default format html; e.g. --merge a.json b.json -o combined.html
+                            Format html unless -F is given; e.g. --merge a.json b.json -o combined.html
+                            The conf's profiles / regions / engines / identifiers do not apply to --merge.
 
 Behaviour:
-      --config FILE         key=value settings (parsed, never sourced; CLI overrides)
-      --aws-timeout SEC     AWS CLI connect/read timeout (default: 30)
-      --max-attempts N      AWS CLI retry attempts (default: 5)
+      --config FILE         Use this conf file instead of $CONFIG_NAME next to the script (it must be complete)
+      --aws-timeout SEC     AWS CLI connect/read timeout  [aws_timeout = $(cur AWS_TIMEOUT)]
+      --max-attempts N      AWS CLI retry attempts  [max_attempts = $(cur MAX_ATTEMPTS)]
       --keep-workdir        Keep raw AWS responses for debugging
       --dry-run             Print the AWS calls that would run; call nothing
-  -v, --verbose             Debug logging
+  -v, --verbose             Debug logging  [verbose = $(cur VERBOSE)]
   -h, --help / -V, --version
 
 Aurora global databases: one read-only rds describe-global-clusters per account (only when Aurora clusters are
 found); rows get global_cluster / global_role, the report a Global databases section. If the call fails the
 report still runs and those clusters show global "unknown".
 
-Exit codes: 0 report produced, 5 NON-COMPLIANT found (only with --fail-on-noncompliant), 1 usage,
+Exit codes: 0 report produced, 5 NON-COMPLIANT found (only with --fail-on-noncompliant), 1 usage / conf error,
             2 pre-check (aws/jq missing, no profile has valid credentials), 3 bad --merge input file,
             4 output error, 130 interrupted.
 USAGE
@@ -210,8 +247,11 @@ add_list() {
     done
     return 0
 }
-# is_true VALUE: success for 1 / y / yes / true / on (any case).
-is_true() { case "${1,,}" in 1|y|yes|true|on) return 0 ;; *) return 1 ;; esac; }
+# to_bool VAR KEY VALUE WHERE: set VAR to 1 or 0 from yes/no (also true/false, on/off, 1/0); anything else stops the run.
+to_bool() {
+    local -n _b="$1"
+    case "${3,,}" in 1|y|yes|true|on) _b=1 ;; 0|n|no|false|off) _b=0 ;; *) die 1 "$4: '$2' must be yes or no (got '$3')" ;; esac
+}
 # need_arg OPTION REMAINING_ARGC: exit 1 when an option that needs a value is the last argument.
 need_arg() { [[ "$2" -ge 2 ]] || die 1 "Option $1 requires a value (see --help)"; }
 # redact_url URL: keep only scheme://host, so a webhook token never reaches the log.
@@ -223,92 +263,120 @@ json_array() { if (( $# )); then printf '%s\n' "$@" | jq -R . | jq -cs .; else p
 # Config file loading and argument parsing
 # ----------------------------------------------------------------------------
 # load_config FILE: read 'key = value' settings and '123456789012 = name' account names into the globals.
-# Unknown keys and credentials stop the run (exit 1). Command-line options are applied after this and win.
+# Every key in REQUIRED_KEYS must be present (a missing key stops the run and is named). Unknown keys and
+# credentials stop the run (exit 1). Command-line options are applied after this and win. Duplicate keys: the last wins.
 load_config() {
-    local file="$1" line key val lineno=0
-    [[ -r "$file" ]] || die 1 "Config file not readable: $file"
+    local file="$1" line key val lineno=0 k where
+    local -A seen=()
+    local -a missing=()
+    if [[ ! -r "$file" ]]; then
+        (( HELP_MODE )) && return 0
+        if (( CONFIG_AUTO )); then die 1 "Config file not found: $file (it ships next to the script: restore it from the release, or pass --config FILE)"; fi
+        die 1 "Config file not readable: $file"
+    fi
     while IFS= read -r line || [[ -n "$line" ]]; do
-        lineno=$(( lineno + 1 )); line="${line%$'\r'}"
+        lineno=$(( lineno + 1 )); line="${line%$'\r'}"; where="Config $file:$lineno"
         [[ "$line" =~ ^[[:space:]]*(#|$) ]] && continue
         if [[ "$line" =~ ^[[:space:]]*([0-9]{12})[[:space:]]*=[[:space:]]*(.*)$ ]]; then   # account name (plain text)
             key="${BASH_REMATCH[1]}"; val="${BASH_REMATCH[2]}"
             [[ "$val" =~ ^(.*[^[:space:]])?[[:space:]]+#.*$ ]] && val="${BASH_REMATCH[1]}"
             val="${val%"${val##*[![:space:]]}"}"; val="${val//[$'\001'-$'\037']/}"
             [[ "$val" =~ ^\"(.*)\"$ || "$val" =~ ^\'(.*)\'$ ]] && val="${BASH_REMATCH[1]}"
-            ACCOUNT_NAMES["$key"]="${val:0:64}"; continue
+            ACCOUNT_NAMES["$key"]="${val:0:$MAX_NAME_CHARS}"; continue
         fi
-        [[ "$line" =~ ^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*=[[:space:]]*(.*)$ ]] \
-            || die 1 "Config $file:$lineno: invalid line (expected key=value)"
-        key="${BASH_REMATCH[1],,}"; val="${BASH_REMATCH[2]}"
+        [[ "$line" =~ ^[[:space:]]*([A-Za-z_][A-Za-z0-9_-]*)[[:space:]]*=[[:space:]]*(.*)$ ]] \
+            || die 1 "$where: invalid line (expected key=value)"
+        key="${BASH_REMATCH[1],,}"; key="${key//-/_}"; val="${BASH_REMATCH[2]}"
         if [[ "$val" =~ ^\"([^\"]*)\" || "$val" =~ ^\'([^\']*)\' ]]; then val="${BASH_REMATCH[1]}"
         else
             [[ "$val" =~ ^(.*[^[:space:]])?[[:space:]]+#.*$ ]] && val="${BASH_REMATCH[1]}"
             val="${val%"${val##*[![:space:]]}"}"
         fi
+        case "$key" in   # singular spellings are the same setting
+            profile) key=profiles ;; region) key=regions ;; engine) key=engines ;; identifier) key=identifiers ;;
+            format) key=formats ;; alert_email) key=alert_emails ;; alert_webhook) key=alert_webhooks ;;
+        esac
         case "$key" in
-            profile|profiles)       PROFILES=(); add_list PROFILES "$val" ;;
-            region|regions)         REGIONS=(); add_list REGIONS "$val" ;;
-            all_regions)            if is_true "$val"; then ALL_REGIONS=1; else ALL_REGIONS=0; fi ;;
-            discover)               if is_true "$val"; then DISCOVER=1; else DISCOVER=0; fi ;;
+            profiles)               PROFILES=(); add_list PROFILES "$val" ;;
+            regions)                REGIONS=(); add_list REGIONS "$val" ;;
+            all_regions)            to_bool ALL_REGIONS "$key" "$val" "$where" ;;
+            discover)               to_bool DISCOVER "$key" "$val" "$where" ;;
             probe_parallel)         PROBE_PARALLEL="$val" ;;
-            engine|engines)         ENGINES=(); add_list ENGINES "$val" ;;
-            identifier|identifiers) IDENTIFIERS=(); add_list IDENTIFIERS "$val" ;;
-            tag_columns)            TAG_IGNORED=1 ;;
-            format|formats)         FORMATS=(); add_list FORMATS "$val" ;;
+            engines)                ENGINES=(); add_list ENGINES "$val" ;;
+            identifiers)            IDENTIFIERS=(); add_list IDENTIFIERS "$val" ;;
+            tag_columns)            TAG_IGNORED=1; seen[$key]=1; continue ;;   # ignored since v1.4.0
+            formats)                FORMATS=(); add_list FORMATS "$val" ;;
             output_dir)             OUTPUT_DIR="${val/#\~/$HOME}" ;;
             prefix)                 PREFIX="$val" ;;
             tz)                     DISPLAY_TZ="$val" ;;
             max_behind)             MAX_BEHIND="$val" ;;
             warn_days)              WARN_DAYS="$val" ;;
-            top)                    TOP_SET=1 ;;
-            non_compliant_only)     if is_true "$val"; then NC_ONLY=1; else NC_ONLY=0; fi ;;
-            oracle_any_patch_line)  if is_true "$val"; then ORACLE_ANY_LINE=1; else ORACLE_ANY_LINE=0; fi ;;
-            fail_on_noncompliant)   if is_true "$val"; then FAIL_ON_NC=1; else FAIL_ON_NC=0; fi ;;
+            top)                    TOP_SET=1; seen[$key]=1; continue ;;
+            non_compliant_only)     to_bool NC_ONLY "$key" "$val" "$where" ;;
+            oracle_any_patch_line)  to_bool ORACLE_ANY_LINE "$key" "$val" "$where" ;;
+            fail_on_noncompliant)   to_bool FAIL_ON_NC "$key" "$val" "$where" ;;
             exceptions)             EXC_FILE="${val/#\~/$HOME}" ;;
+            exception_warn_days)    EXC_WARN_DAYS="$val" ;;
             log_file)               LOG_FILE="${val/#\~/$HOME}" ;;
             aws_timeout)            AWS_TIMEOUT="$val" ;;
             max_attempts)           MAX_ATTEMPTS="$val" ;;
-            verbose)                if is_true "$val"; then VERBOSE=1; else VERBOSE=0; fi ;;
-            alert_email|alert_emails)     ALERT_EMAILS=(); add_list ALERT_EMAILS "$val" ;;
-            alert_webhook|alert_webhooks) ALERT_WEBHOOKS=(); add_list ALERT_WEBHOOKS "$val" ;;
+            aws_retry_mode)         AWS_RETRY_MODE_SETTING="$val" ;;
+            verbose)                to_bool VERBOSE "$key" "$val" "$where" ;;
+            alert_emails)           ALERT_EMAILS=(); add_list ALERT_EMAILS "$val" ;;
+            alert_webhooks)         ALERT_WEBHOOKS=(); add_list ALERT_WEBHOOKS "$val" ;;
             alert_webhook_format)   ALERT_WEBHOOK_FORMAT="$val" ;;
             alert_on)               ALERT_ON="$val" ;;
             alert_from)             ALERT_FROM="$val" ;;
+            attach_html)            to_bool ATTACH_HTML "$key" "$val" "$where" ;;
+            attach_csv)             to_bool ATTACH_CSV "$key" "$val" "$where" ;;
+            attach_prefix)          ATTACH_PREFIX="$val" ;;
+            mail_timeout)           MAIL_TIMEOUT="$val" ;;
+            slack_max_chars)        SLACK_MAX_CHARS="$val" ;;
+            webhook_timeout)        WEBHOOK_TIMEOUT="$val" ;;
+            webhook_retries)        WEBHOOK_RETRIES="$val" ;;
             aws_access_key_id|aws_secret_access_key|aws_session_token|secret|password)
-                die 1 "Config $file:$lineno: credentials are not accepted here; use an AWS CLI profile / SSO / role" ;;
-            *) die 1 "Config $file:$lineno: unknown key '$key'" ;;
+                die 1 "$where: credentials are not accepted here; use an AWS CLI profile / SSO / role" ;;
+            *) die 1 "$where: unknown key '$key'" ;;
         esac
+        seen[$key]=1
     done <"$file"
+    (( HELP_MODE )) && return 0
+    for k in "${REQUIRED_KEYS[@]}"; do [[ -n "${seen[$k]:-}" ]] || missing+=("$k"); done
+    (( ${#missing[@]} == 0 )) || die 1 "Config $file: missing required setting(s): ${missing[*]} (every setting must be in the conf; compare with the $CONFIG_NAME that ships with the script)"
 }
 
-# parse_args "$@": load --config first (wherever it appears), then apply the options in order.
+# parse_args "$@": load the conf first (--config FILE wherever it appears, else $CONFIG_NAME next to the script),
+# then apply the options in order. An option given here replaces the conf value for this run.
 parse_args() {
-    local i j
+    local i j a
     for (( i = 1; i <= $#; i++ )); do
-        case "${!i}" in
-            --config=*) CONFIG_FILE="${!i#--config=}" ;;
+        a="${!i}"
+        case "$a" in
+            --config=*) CONFIG_FILE="${a#--config=}" ;;
             --config)   j=$(( i + 1 )); (( j <= $# )) || die 1 "Option --config requires a value"; CONFIG_FILE="${!j}" ;;
+            -h|--help|-V|--version) HELP_MODE=1 ;;
         esac
     done
-    [[ -n "$CONFIG_FILE" ]] && load_config "$CONFIG_FILE"
+    if [[ -z "$CONFIG_FILE" ]]; then CONFIG_FILE="$SCRIPT_DIR/$CONFIG_NAME"; CONFIG_AUTO=1; fi
+    load_config "$CONFIG_FILE"
     local -A seen=()
     local opt
     # reset_once ARRAY_NAME: empty a list the first time its option is seen, so -P / -r / -e ... replace the
-    # config value instead of adding to it; later uses of the same option append.
+    # conf value instead of adding to it; later uses of the same option append.
     reset_once() { [[ -n "${seen[$1]:-}" ]] && return 0; seen[$1]=1; local -n _a="$1"; _a=(); }
     while (( $# )); do
         opt="$1"
         # --option=value is split into --option value
         if [[ "$opt" == --*=* ]]; then set -- "${opt%%=*}" "${opt#*=}" "${@:2}"; opt="$1"; fi
         case "$opt" in
-            -P|--profile)       need_arg "$opt" $#; reset_once PROFILES; add_list PROFILES "$2"; shift 2 ;;
-            -r|--region)        need_arg "$opt" $#; reset_once REGIONS; add_list REGIONS "$2"; shift 2 ;;
-            -A|--all-regions)   ALL_REGIONS=1; shift ;;
+            -P|--profile)       need_arg "$opt" $#; reset_once PROFILES; add_list PROFILES "$2"; CLI_SET[profiles]=1; shift 2 ;;
+            -r|--region)        need_arg "$opt" $#; reset_once REGIONS; add_list REGIONS "$2"; CLI_SET[regions]=1; shift 2 ;;
+            -A|--all-regions)   ALL_REGIONS=1; CLI_SET[all_regions]=1; shift ;;
             --no-discover)      DISCOVER=0; shift ;;
             --discover)         DISCOVER=1; shift ;;
             --probe-parallel)   need_arg "$opt" $#; PROBE_PARALLEL="$2"; shift 2 ;;
-            -e|--engine)        need_arg "$opt" $#; reset_once ENGINES; add_list ENGINES "$2"; shift 2 ;;
-            -i|--identifier)    need_arg "$opt" $#; reset_once IDENTIFIERS; add_list IDENTIFIERS "$2"; shift 2 ;;
+            -e|--engine)        need_arg "$opt" $#; reset_once ENGINES; add_list ENGINES "$2"; CLI_SET[engines]=1; shift 2 ;;
+            -i|--identifier)    need_arg "$opt" $#; reset_once IDENTIFIERS; add_list IDENTIFIERS "$2"; CLI_SET[identifiers]=1; shift 2 ;;
             -T|--tag-columns)   need_arg "$opt" $#; TAG_IGNORED=1; shift 2 ;;
             -F|--format)        need_arg "$opt" $#; reset_once FORMATS; add_list FORMATS "$2"; FORMATS_SET=1; shift 2 ;;
             -o|--output-dir)    need_arg "$opt" $#; OUTPUT_DIR="$2"; shift 2 ;;
@@ -338,12 +406,19 @@ parse_args() {
             --alert-webhook-format) need_arg "$opt" $#; ALERT_WEBHOOK_FORMAT="$2"; shift 2 ;;
             --alert-on)         need_arg "$opt" $#; ALERT_ON="$2"; shift 2 ;;
             --alert-from)       need_arg "$opt" $#; ALERT_FROM="$2"; shift 2 ;;
+            --attach-html)      need_arg "$opt" $#; to_bool ATTACH_HTML attach_html "$2" "Option --attach-html"; shift 2 ;;
+            --attach-csv)       need_arg "$opt" $#; to_bool ATTACH_CSV attach_csv "$2" "Option --attach-csv"; shift 2 ;;
+            --attach-prefix)    need_arg "$opt" $#; ATTACH_PREFIX="$2"; shift 2 ;;
+            --mail-timeout)     need_arg "$opt" $#; MAIL_TIMEOUT="$2"; shift 2 ;;
             --alert-test)       ALERT_TEST=1; shift ;;
             -h|--help)          usage; exit 0 ;;
             -V|--version)       echo "$SCRIPT_NAME $SCRIPT_VERSION"; exit 0 ;;
             *)                  die 1 "Unknown option: $opt (see --help)" ;;
         esac
     done
+    # -r replaces all_regions = yes from the conf; -A replaces regions from the conf (both on the command line = an error)
+    if [[ -n "${CLI_SET[regions]:-}" && -z "${CLI_SET[all_regions]:-}" ]]; then ALL_REGIONS=0; fi
+    if [[ -n "${CLI_SET[all_regions]:-}" && -z "${CLI_SET[regions]:-}" ]]; then REGIONS=(); fi
 }
 
 # ----------------------------------------------------------------------------
@@ -355,7 +430,8 @@ validate() {
     (( TAG_IGNORED )) && log_warn "-T / tag_columns is ignored since v1.4.0: tag columns are no longer shown (tags stay in --save-data / JSON)"
     command -v jq >/dev/null 2>&1 || die 2 "jq not found in PATH (install jq 1.6+)"
     local x
-    if (( ! ${#FORMATS[@]} )); then if (( MERGE )); then FORMATS=(html); else FORMATS=(text); fi; fi   # --merge defaults to html
+    if (( MERGE && ! FORMATS_SET )); then FORMATS=(html); fi   # --merge: html unless -F is given (the conf's formats are for scans)
+    (( ${#FORMATS[@]} )) || die 1 "formats is empty: set formats in the conf or give -F"
     for x in "${FORMATS[@]}"; do case "${x,,}" in text|txt|csv|json|html) ;; *) die 1 "Unknown format '$x' (text,csv,json,html)" ;; esac; done
     mapfile -t FORMATS < <(printf '%s\n' "${FORMATS[@],,}" | sed 's/^txt$/text/' | awk '!s[$0]++')
     if [[ "$OUTPUT_DIR" == *.[hH][tT][mM][lL] || "$OUTPUT_DIR" == *.[hH][tT][mM] ]]; then   # -o report.html: a file name
@@ -365,8 +441,9 @@ validate() {
     fi
     if (( MERGE )); then
         (( ${#MERGE_ARGS[@]} )) || die 1 "--merge needs at least one --save-data file or directory"
-        (( ${#PROFILES[@]} || ${#REGIONS[@]} || ALL_REGIONS )) && die 1 "--merge works offline on saved data: -P / -r / -A do not apply"
-        (( ${#ENGINES[@]} || ${#IDENTIFIERS[@]} )) && die 1 "--merge: -e / -i do not apply (filter in the HTML report instead)"
+        [[ -n "${CLI_SET[profiles]:-}${CLI_SET[regions]:-}${CLI_SET[all_regions]:-}" ]] && die 1 "--merge works offline on saved data: -P / -r / -A do not apply"
+        [[ -n "${CLI_SET[engines]:-}${CLI_SET[identifiers]:-}" ]] && die 1 "--merge: -e / -i do not apply (filter in the HTML report instead)"
+        PROFILES=(); REGIONS=(); ALL_REGIONS=0; ENGINES=(); IDENTIFIERS=()   # the conf's scan scope is not used offline
         (( DRY_RUN || SAVE_DATA || ALERT_TEST )) && die 1 "--merge cannot be combined with --dry-run, --save-data or --alert-test"
     fi
     if [[ -n "$SAVE_DATA_FILE" ]]; then
@@ -391,17 +468,30 @@ validate() {
     fi
     if [[ ! "$AWS_TIMEOUT" =~ ^[0-9]+$ ]] || (( AWS_TIMEOUT == 0 )); then die 1 "--aws-timeout must be a positive integer"; fi
     if [[ ! "$MAX_ATTEMPTS" =~ ^[0-9]+$ ]] || (( MAX_ATTEMPTS == 0 )); then die 1 "--max-attempts must be a positive integer"; fi
-    if [[ ! "$PROBE_PARALLEL" =~ ^[0-9]+$ ]] || (( 10#$PROBE_PARALLEL < 1 || 10#$PROBE_PARALLEL > 32 )); then die 1 "--probe-parallel must be 1-32"; fi
+    if [[ ! "$PROBE_PARALLEL" =~ ^[0-9]+$ ]] || (( 10#$PROBE_PARALLEL < 1 || 10#$PROBE_PARALLEL > MAX_PROBE_PARALLEL )); then die 1 "--probe-parallel must be 1-$MAX_PROBE_PARALLEL"; fi
     PROBE_PARALLEL=$(( 10#$PROBE_PARALLEL ))
     if (( ALL_REGIONS )); then if (( DISCOVER )); then REGION_MODE="discover"; else REGION_MODE="full"; fi; fi
     case "${ALERT_ON,,}" in noncompliant|always) ALERT_ON="${ALERT_ON,,}" ;; *) die 1 "--alert-on must be noncompliant or always" ;; esac
     case "${ALERT_WEBHOOK_FORMAT,,}" in slack|json) ALERT_WEBHOOK_FORMAT="${ALERT_WEBHOOK_FORMAT,,}" ;; *) die 1 "--alert-webhook-format must be slack or json" ;; esac
+    [[ "$ATTACH_PREFIX" =~ ^[A-Za-z0-9._-]+$ ]] || die 1 "--attach-prefix may contain only letters, digits, . _ -"
+    if [[ ! "$MAIL_TIMEOUT" =~ ^[0-9]+$ ]] || (( 10#$MAIL_TIMEOUT == 0 )); then die 1 "--mail-timeout must be a positive integer"; fi
+    if [[ ! "$SLACK_MAX_CHARS" =~ ^[0-9]+$ ]] || (( 10#$SLACK_MAX_CHARS == 0 )); then die 1 "slack_max_chars must be a positive integer"; fi
+    if [[ ! "$WEBHOOK_TIMEOUT" =~ ^[0-9]+$ ]] || (( 10#$WEBHOOK_TIMEOUT == 0 )); then die 1 "webhook_timeout must be a positive integer"; fi
+    [[ "$WEBHOOK_RETRIES" =~ ^[0-9]+$ ]] || die 1 "webhook_retries must be a whole number (0 or more)"
+    [[ "$EXC_WARN_DAYS" =~ ^[0-9]+$ ]] || die 1 "exception_warn_days must be a whole number (0 or more)"
+    case "${AWS_RETRY_MODE_SETTING,,}" in standard|adaptive|legacy) AWS_RETRY_MODE_SETTING="${AWS_RETRY_MODE_SETTING,,}" ;; *) die 1 "aws_retry_mode must be standard, adaptive or legacy" ;; esac
+    MAIL_TIMEOUT=$(( 10#$MAIL_TIMEOUT )); SLACK_MAX_CHARS=$(( 10#$SLACK_MAX_CHARS ))
+    WEBHOOK_TIMEOUT=$(( 10#$WEBHOOK_TIMEOUT )); WEBHOOK_RETRIES=$(( 10#$WEBHOOK_RETRIES )); EXC_WARN_DAYS=$(( 10#$EXC_WARN_DAYS ))
     for x in "${ALERT_EMAILS[@]}"; do
         [[ "$x" =~ ^[^[:space:]@\;\|\&\$\`]+@[^[:space:]@\;\|\&\$\`]+$ ]] || die 1 "Invalid --alert-email address: $x"
     done
     for x in "${ALERT_WEBHOOKS[@]}"; do [[ "$x" =~ ^https?:// ]] || die 1 "--alert-webhook must be an http(s) URL: $(redact_url "$x")"; done
-    if [[ -n "$LOG_FILE" && "$DRY_RUN" -eq 0 ]]; then touch -- "$LOG_FILE" 2>/dev/null || die 1 "Cannot write log file: $LOG_FILE"; fi
+    if [[ -n "$LOG_FILE" && "$DRY_RUN" -eq 0 ]]; then   # the log folder is created like the output folder
+        { mkdir -p -- "$(dirname -- "$LOG_FILE")" && touch -- "$LOG_FILE"; } 2>/dev/null || die 1 "Cannot write log file: $LOG_FILE"
+    fi
     (( MERGE )) || (( ${#PROFILES[@]} )) || PROFILES=("")
+    # the summary script runs this one with a temporary copy of the conf and prints the Settings line itself
+    [[ -n "${RDS_PCR_NO_SETTINGS_LOG:-}" ]] || log_info "Settings: $CONFIG_FILE ($( (( CONFIG_AUTO )) && echo "loaded automatically from the script folder" || echo "from --config"))"
     load_exceptions   # before any AWS call: a bad line stops the run now, not after the scan
     [[ "$EXC_JSON" != null ]] && log_info "Exceptions file $EXC_PATH: $(jq -r 'length' <<<"$EXC_JSON" | tr -d '\r') entries"
     return 0
@@ -484,7 +574,7 @@ load_exceptions() {   # -> EXC_JSON: "null" (feature off: no file) or a JSON arr
 # compliance.jq needs every $variable defined in every mode
 rjq() {   # rjq <mode> [extra jq args...]
     local mode="$1"; shift
-    TZ="$DISPLAY_TZ" jq --arg mode "$mode" --argjson now "$NOW" --argjson max_behind "$MAX_BEHIND" --argjson warn_days "$WARN_DAYS" \
+    TZ="$DISPLAY_TZ" jq --arg mode "$mode" --argjson now "$NOW" --argjson max_behind "$MAX_BEHIND" --argjson warn_days "$WARN_DAYS" --argjson exc_warn_days "$EXC_WARN_DAYS" \
         --argjson top_n "$TOP_N" --argjson nc_only "$( (( NC_ONLY )) && echo true || echo false)" \
         --argjson oracle_any "$( (( ORACLE_ANY_LINE )) && echo true || echo false)" \
         --argjson tagcols "$(json_array "${TAG_COLUMNS[@]}")" --argjson f "$FILTERS_JSON" \
@@ -567,6 +657,7 @@ precheck() {
     [[ "$v" =~ ^jq-1\.([6-9]|[1-9][0-9]) ]] || die 2 "jq 1.6 or newer required (found ${v:-unknown})"
     [[ -r "$LIB" ]] || die 2 "Library missing: $LIB"
     [[ -r "$PAGE_JS" ]] || die 2 "Library missing: $PAGE_JS"
+    (( ! ${#ALERT_EMAILS[@]} )) || [[ -r "$EMAIL_LIB" ]] || die 2 "Library missing: $EMAIL_LIB"
 }
 # precheck_jq: --merge only needs jq 1.6+ and the lib files (no AWS CLI).
 precheck_jq() {
@@ -921,30 +1012,104 @@ write_outputs() {
 # ----------------------------------------------------------------------------
 # Alerts (optional)
 # ----------------------------------------------------------------------------
-# send_email_alert: send the text body with mail / mailx, else sendmail (60 s timeout when available).
-send_email_alert() {   # send_email_alert <subject> <body-file>   (body is streamed from the file)
-    local subject="$1" bodyfile="$2" mailer="" to
-    local -a tmo=()
-    command -v timeout >/dev/null 2>&1 && tmo=(timeout 60)
-    if command -v mail >/dev/null 2>&1; then mailer="mail"
-    elif command -v mailx >/dev/null 2>&1; then mailer="mailx"
-    elif command -v sendmail >/dev/null 2>&1; then mailer="sendmail"
-    elif [[ -x /usr/sbin/sendmail ]]; then mailer=/usr/sbin/sendmail
-    else log_warn "Alert: no mail/mailx/sendmail found"; return 1; fi
-    if [[ "$mailer" == mail || "$mailer" == mailx ]]; then
+# find_mailer: sendmail first (it can send the HTML body and attachments), else mail, then mailx (text only).
+# Prints the command, or nothing when none exists.
+find_mailer() {
+    local c
+    command -v sendmail 2>/dev/null && return 0
+    [[ -x /usr/sbin/sendmail ]] && { echo /usr/sbin/sendmail; return 0; }
+    for c in mail mailx; do command -v "$c" 2>/dev/null && return 0; done
+    return 0
+}
+# attach_mime_name FILE: short name used only in the e-mail headers (the file on disk keeps its name):
+# <attach_prefix>_YYYY-MM-DD.<ext>, with the UTC date of this run.
+attach_mime_name() {
+    local ext="${1##*.}" day
+    if [[ "$NOW" =~ ^[1-9][0-9]*$ ]]; then day="$(date -u -d "@$NOW" +%Y-%m-%d)"; else day="$(date -u +%Y-%m-%d)"; fi
+    printf '%s_%s.%s' "$ATTACH_PREFIX" "$day" "$ext"
+}
+# mime_attach BOUNDARY FILE: one base64 attachment part named by attach_mime_name.
+mime_attach() {
+    local bnd="$1" f="$2" name ctype
+    name="$(attach_mime_name "$f")"
+    case "${f##*.}" in html|htm) ctype="text/html; charset=UTF-8" ;; csv) ctype="text/csv; charset=UTF-8" ;; *) ctype="application/octet-stream" ;; esac
+    printf -- '\n--%s\nContent-Type: %s; name="%s"\nContent-Disposition: attachment; filename="%s"\nContent-Transfer-Encoding: base64\n\n' "$bnd" "$ctype" "$name" "$name"
+    base64 <"$f"
+}
+# send_email SUBJECT TEXT_FILE HTML_FILE [ATTACH...]: sendmail gets multipart/mixed { alternative { text, HTML }, attachments };
+# mail / mailx get the text summary only. The mail command may run at most mail_timeout seconds.
+send_email() {
+    local subject="$1" text="$2" html="$3" mailer to mixed alt a
+    shift 3
+    local -a atts=("$@") tmo=()
+    command -v timeout >/dev/null 2>&1 && tmo=(timeout "$MAIL_TIMEOUT")
+    mailer="$(find_mailer)"
+    [[ -n "$mailer" ]] || { log_warn "Alert: no mail, mailx or sendmail found; e-mail not sent"; return 1; }
+    if [[ "${mailer##*/}" != sendmail ]]; then
         local -a from=(); [[ -n "$ALERT_FROM" ]] && from=(-r "$ALERT_FROM")
-        "${tmo[@]}" "$mailer" "${from[@]}" -s "$subject" -- "${ALERT_EMAILS[@]}" <"$bodyfile"
-    else
-        to="$(IFS=,; printf '%s' "${ALERT_EMAILS[*]}")"
-        { [[ -n "$ALERT_FROM" ]] && printf 'From: %s\n' "$ALERT_FROM"
-          printf 'To: %s\nSubject: %s\nContent-Type: text/plain; charset=UTF-8\n\n' "$to" "$subject"; cat -- "$bodyfile"; } | "${tmo[@]}" "$mailer" -t -oi
+        log_info "Alert: ${mailer##*/} sends the text summary only (install sendmail for the HTML body and attachments)"
+        "${tmo[@]}" "$mailer" "${from[@]}" -s "$subject" -- "${ALERT_EMAILS[@]}" <"$text"; return
     fi
+    to="$(IFS=,; printf '%s' "${ALERT_EMAILS[*]}")"
+    mixed="rds_pcr_$(date +%s)_$$"; alt="rds_pcr_alt_$(date +%s)_$$"
+    {
+        [[ -n "$ALERT_FROM" ]] && printf 'From: %s\n' "$ALERT_FROM"
+        printf 'To: %s\nSubject: %s\nMIME-Version: 1.0\n' "$to" "$subject"
+        if (( ${#atts[@]} )); then
+            printf 'Content-Type: multipart/mixed; boundary="%s"\n\nThis is a MIME message.\n\n' "$mixed"
+            printf -- '--%s\nContent-Type: multipart/alternative; boundary="%s"\n\n' "$mixed" "$alt"
+        else
+            printf 'Content-Type: multipart/alternative; boundary="%s"\n\n' "$alt"
+        fi
+        printf -- '--%s\nContent-Type: text/plain; charset=UTF-8\nContent-Transfer-Encoding: 8bit\n\n' "$alt"
+        cat -- "$text"
+        printf -- '\n--%s\nContent-Type: text/html; charset=UTF-8\nContent-Transfer-Encoding: 8bit\n\n' "$alt"
+        cat -- "$html"
+        printf -- '\n--%s--\n' "$alt"
+        if (( ${#atts[@]} )); then
+            for a in "${atts[@]}"; do mime_attach "$mixed" "$a"; done
+            printf -- '\n--%s--\n' "$mixed"
+        fi
+    } | "${tmo[@]}" "$mailer" -t -oi
+}
+# is_report_csv FILE: the per-server CSV, not the regions CSV.
+is_report_csv() { local b="${1##*/}"; [[ "$b" == *.csv && "$b" != *_regions.csv ]]; }
+# alert_bodies REPORT_JSON TEXT_OUT HTML_OUT: write the e-mail text and HTML bodies with lib/alert_email.jq.
+alert_bodies() {
+    local data="$1" text_out="$2" html_out="$3" host when m
+    host="$(hostname 2>/dev/null || echo unknown)"; when="$(date '+%Y-%m-%d %H:%M:%S %Z')"
+    for m in text html; do
+        jq -r -f "$EMAIL_LIB" --arg mode "$m" --arg host "$host" --arg tool "$SCRIPT_NAME v$SCRIPT_VERSION" --arg when "$when" "$data" \
+            | unix_eol >"$WORK/alert_body.$m.tmp" || return 1
+    done
+    mv -f -- "$WORK/alert_body.text.tmp" "$text_out"; mv -f -- "$WORK/alert_body.html.tmp" "$html_out"
+}
+# alert_attachments: print the files to attach: the written HTML / per-server CSV, else one rendered into the work dir.
+alert_attachments() {
+    local w f=""
+    if (( ATTACH_HTML )); then
+        for w in "${WRITTEN[@]}"; do [[ "$w" == *.html ]] && f="$w"; done
+        if [[ -z "$f" ]]; then f="$WORK/${PREFIX}_report.html"; render html >"$f" || f=""; fi
+        [[ -n "$f" && -s "$f" ]] && printf '%s\n' "$f"
+    fi
+    if (( ATTACH_CSV )); then
+        f=""
+        for w in "${WRITTEN[@]}"; do is_report_csv "$w" && f="$w"; done
+        if [[ -z "$f" ]]; then f="$WORK/${PREFIX}_report.csv"; render csv >"$f" || f=""; fi
+        [[ -n "$f" && -s "$f" ]] && printf '%s\n' "$f"
+    fi
+    return 0
+}
+# test_email_html HOST WHEN: tiny HTML body for --alert-test.
+test_email_html() {
+    printf '<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>TEST alert</title></head>\n<body style="margin:0;padding:0;font-family:Arial,Helvetica,sans-serif;color:#1d2939;">\n<table role="presentation" width="760" cellspacing="0" cellpadding="0" style="width:760px;max-width:760px;border:1px solid #d0d5dd;">\n<tr><td style="padding:16px 20px;background:#1f5fa8;color:#ffffff;"><div style="font-size:11px;letter-spacing:.04em;text-transform:uppercase;opacity:.9;">RDS patch compliance</div><div style="font-size:20px;font-weight:700;margin-top:4px;">TEST</div></td></tr>\n<tr><td style="padding:16px 20px;font-size:14px;line-height:1.5;">%s</td></tr>\n</table></body></html>\n' \
+        "$(printf '%s' "$1" | jq -Rr @html)"
 }
 # send_webhook_alert: POST the JSON payload with curl; the URL is passed on stdin (-K -), so it never shows in ps.
 send_webhook_alert() {   # send_webhook_alert <url> <payload-file>
     local url="$1" payload="$2" out
     command -v curl >/dev/null 2>&1 || { log_warn "Alert: curl not installed; webhook skipped"; return 1; }
-    out="$(printf 'url = "%s"\n' "${url//\"/\\\"}" | curl -sS --fail --max-time 20 --retry 2 \
+    out="$(printf 'url = "%s"\n' "${url//\"/\\\"}" | curl -sS --fail --max-time "$WEBHOOK_TIMEOUT" --retry "$WEBHOOK_RETRIES" \
             -H 'Content-Type: application/json' --data-binary "@$payload" -o /dev/null -w '%{http_code}' -K - 2>&1)" \
         || { log_warn "Alert: webhook $(redact_url "$url") failed: ${out%%$'\n'*}"; return 1; }
     log_info "Alert: webhook $(redact_url "$url") -> HTTP $out"
@@ -954,11 +1119,13 @@ send_webhook_alert() {   # send_webhook_alert <url> <payload-file>
 send_alerts() {   # send_alerts <rc> [test]
     local rc="$1" mode="${2:-}" subject url status
     (( ${#ALERT_EMAILS[@]} + ${#ALERT_WEBHOOKS[@]} )) || return 0
-    local body="$WORK/alert_body.txt" payload="$WORK/alert_payload.json"
+    local body="$WORK/alert_body.txt" payload="$WORK/alert_payload.json" mtext="$WORK/mail_body.txt" mhtml="$WORK/mail_body.html"
+    local -a atts=()
     if [[ "$mode" == test ]]; then
         status="TEST"; subject="[rds_patch_compliance] TEST alert from $(hostname 2>/dev/null || echo unknown)"
         printf 'Test alert from %s v%s at %s. No AWS calls were made.\n' "$SCRIPT_NAME" "$SCRIPT_VERSION" "$(date '+%Y-%m-%d %H:%M:%S %Z')" >"$body"
         jq -cn --arg s "$subject" --rawfile b "$body" '{status: "TEST", text: ($s + "\n\n" + $b)}' >"$payload"
+        cp -- "$body" "$mtext"; test_email_html "$(cat -- "$body")" >"$mhtml"
     else
         if [[ "$ALERT_ON" == noncompliant ]] && [[ "$(jq -r '.summary.non_compliant + .summary.errors' "$REPORT")" == 0 ]]; then return 0; fi
         status="$(jq -r 'if .summary.non_compliant > 0 then "NON-COMPLIANT" elif .summary.errors > 0 then "ERRORS" else "COMPLIANT" end' "$REPORT")"
@@ -975,8 +1142,14 @@ send_alerts() {   # send_alerts <rc> [test]
             '{text: ("*" + $h + "*\n```" + (if ($b | length) > $max then $b[0:$max] + "\n... (truncated - see the report files / e-mail)" else $b end) + "```")}' >"$payload"
     fi
     if (( ${#ALERT_EMAILS[@]} )); then
-        if send_email_alert "$subject" "$body"; then log_info "Alert: e-mail ($status) sent to ${ALERT_EMAILS[*]}"
-        else log_warn "Alert: e-mail to ${ALERT_EMAILS[*]} failed"; fi
+        if [[ "$mode" != test ]]; then
+            if ! alert_bodies "$REPORT" "$mtext" "$mhtml"; then log_warn "Alert: building the e-mail body failed; e-mail not sent"; ALERT_EMAILS=(); fi
+            if (( ${#ALERT_EMAILS[@]} )); then mapfile -t atts < <(alert_attachments); fi
+        fi
+        if (( ${#ALERT_EMAILS[@]} )); then
+            if send_email "$subject" "$mtext" "$mhtml" "${atts[@]}"; then log_info "Alert: e-mail ($status) sent to ${ALERT_EMAILS[*]}"
+            else log_warn "Alert: e-mail to ${ALERT_EMAILS[*]} failed"; fi
+        fi
     fi
     for url in "${ALERT_WEBHOOKS[@]}"; do send_webhook_alert "$url" "$payload" || true; done
     return 0
@@ -996,6 +1169,17 @@ dry_run_plan() {
     echo "  filters  : $(filters_text)"
     echo "  rule     : COMPLIANT <= $MAX_BEHIND minor version(s) behind; support warning ${WARN_DAYS}d"
     echo "  formats  : ${FORMATS[*]} -> ${OUTPUT_DIR:-stdout}"
+    echo "  settings : $CONFIG_FILE"
+    if (( ${#ALERT_EMAILS[@]} )); then
+        local mailer att=""; mailer="$(find_mailer)"
+        (( ATTACH_HTML )) && att="the HTML report"
+        (( ATTACH_CSV )) && att+="${att:+ and }the per-server CSV"
+        case "$mailer" in
+            "") echo "  e-mail   : to ${ALERT_EMAILS[*]} - no mail command found (mail, mailx, sendmail): the run would only log a warning" ;;
+            *sendmail) echo "  e-mail   : to ${ALERT_EMAILS[*]} via $mailer (HTML body + text; attaches ${att:-nothing})" ;;
+            *) echo "  e-mail   : to ${ALERT_EMAILS[*]} via $mailer (text summary only; install sendmail for the HTML body and attachments)" ;;
+        esac
+    fi
     for p in "${PROFILES[@]}"; do
         r="${REGIONS[0]:-<region>}"
         echo "Profile ${p:-default}:"
@@ -1205,7 +1389,7 @@ main() {
     [[ -n "${RDS_PCR_NOW:-}" ]] && NOW="$RDS_PCR_NOW"   # tests: fixed clock
     FILTERS_JSON="$(filters_json | tr -d '\r')"
     if (( MERGE )); then merge_main; fi
-    export AWS_PAGER="" AWS_MAX_ATTEMPTS="$MAX_ATTEMPTS" AWS_RETRY_MODE="${AWS_RETRY_MODE:-standard}"
+    export AWS_PAGER="" AWS_MAX_ATTEMPTS="$MAX_ATTEMPTS" AWS_RETRY_MODE="${AWS_RETRY_MODE:-$AWS_RETRY_MODE_SETTING}"
     if (( ALERT_TEST )); then
         (( ${#ALERT_EMAILS[@]} + ${#ALERT_WEBHOOKS[@]} )) || die 1 "--alert-test needs --alert-email or --alert-webhook"
         WORK="$(mktemp -d "${TMPDIR:-/tmp}/rds_pcr.XXXXXX")"

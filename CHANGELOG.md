@@ -3,6 +3,17 @@
 Plain-English features for each published release. The What's new page is built from this file.
 Only GitHub releases are listed here (older README history before v1.3.1 is not a published release zip).
 
+## Unreleased
+- One settings file for both scripts: `rds_patch_compliance_report.conf` sits next to them and is loaded automatically (the same way as the backup tool). Every value is in it, each with a short comment saying what it does, the allowed values and an example; nothing is hardcoded in the scripts any more
+- If a setting is missing the run stops before any AWS call and names it. `--config FILE` runs with another complete copy; a command line option still overrides one value. The startup output says which file was used
+- The summary script reads the same file (accounts, regions, rule, formats, e-mail and webhook settings); its own options override it
+- The alert e-mail is now HTML with a plain-text copy: a status banner, count cards, and tables of the NON-COMPLIANT and UNKNOWN servers and AWS errors (Account, Server and region, Engine, Current to target, Reason). Pending maintenance is only a count. Report paths are not in the e-mail (they still print on the screen)
+- With `sendmail` the HTML report and the per-server CSV are attached with short names (`patch_compliance_YYYY-MM-DD.html` / `.csv`); with only `mail` / `mailx` the text summary alone is sent. New settings and options: `attach_html`, `attach_csv`, `attach_prefix`, `mail_timeout` (`--attach-html`, `--attach-csv`, `--attach-prefix`, `--mail-timeout`)
+- Other values that used to be fixed are now settings: `webhook_timeout`, `webhook_retries`, `aws_retry_mode`, `exception_warn_days`
+- Slack and webhook payloads, and the text, CSV, HTML and JSON reports, are unchanged for the same values (checked byte for byte against 1.7.1)
+- Upgrading: an old partial conf now stops with `missing required setting(s)`; start from the shipped `rds_patch_compliance_report.conf`. The release zip now includes it. `rds_patch_compliance_report.conf.example` is superseded and kept for now
+- The shipped values write csv, html and txt files into `./reports` (created if missing) and log to `./reports/run.log`; `-o ''` prints one format on the screen
+
 ## 1.7.1
 - Pending maintenance tab: the Action dropdown always lists the standard AWS types (system-update, db-upgrade, os-upgrade, hardware-maintenance, ca-certificate-rotation) with a count each; types with 0 are greyed out, and any other type found is added at the end
 - A one-line "Actions by type" strip above the table; click a count to show only that type (Reset clears it)

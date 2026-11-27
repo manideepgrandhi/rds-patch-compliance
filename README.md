@@ -8,6 +8,8 @@ A **read-only** patch compliance report for AWS databases. For every Aurora clus
 ./rds_patch_compliance_report.sh -P prod,nonprod -r us-east-1,ap-south-1 -F csv,html,txt -o ~/compliance
 ```
 
+**Settings live in one file.** `rds_patch_compliance_report.conf` (next to the scripts) holds every value, each with a short comment (what it does, allowed values, an example). It is loaded automatically by both scripts; just run `./rds_patch_compliance_report.sh`. A command line option overrides one value for that run. See [Configuration file](#configuration-file).
+
 For a walk-through of what happens when you run the script, a flow diagram, and the use of every file and function, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Get it (AWS CloudShell)
@@ -28,7 +30,7 @@ sha256sum -c rds-patch-compliance.zip.sha256 && unzip -oq rds-patch-compliance.z
 
 `sha256sum -c` must print `rds-patch-compliance.zip: OK`. If it reports `FAILED`, the `&&` chain stops before `unzip`; delete the zip and do not run it. Releases from v1.4.1 on publish `rds-patch-compliance.zip.sha256` next to the zip.
 
-The zip is slim (v1.3.2): one top-level folder `rds-patch-compliance/` with only the runtime files - both `.sh` scripts (execute bits kept), `lib/`, `README.md`, `EXAMPLES.md` and `rds_patch_compliance_report.conf.example`. No `docs/`, `samples/` or `tests/` (they are not needed to run; clone the repo if you want them). GitHub's "Source code" archives are slim too (`.gitattributes` export-ignore). Releases: <https://github.com/manideepgrandhi/rds-patch-compliance/releases>. Needs bash, jq and the AWS CLI (all present in CloudShell).
+The zip is slim (v1.3.2): one top-level folder `rds-patch-compliance/` with only the runtime files - both `.sh` scripts (execute bits kept), `lib/`, `README.md`, `EXAMPLES.md` and `rds_patch_compliance_report.conf` (the settings file; the scripts need it next to them). No `docs/`, `samples/` or `tests/` (they are not needed to run; clone the repo if you want them). GitHub's "Source code" archives are slim too (`.gitattributes` export-ignore). Releases: <https://github.com/manideepgrandhi/rds-patch-compliance/releases>. Needs bash, jq and the AWS CLI (all present in CloudShell).
 
 * **Engines and what is judged:**
   * Aurora clusters: `aurora-postgresql`, `aurora-mysql`. Judged **per cluster**; members are listed.
@@ -46,7 +48,7 @@ The zip is slim (v1.3.2): one top-level folder `rds-patch-compliance/` with only
 
 ## Summary script (managers / teams)
 
-`rds_patch_compliance_summary.sh` is a separate, read-only script that shows **only the high-level picture and the NON-COMPLIANT servers**. It runs the full report (`rds_patch_compliance_report.sh -F json`) for the scan, so the counting is identical: valid RDS minor upgrade targets only, same major line, Oracle same patch line, deprecated versions as UNKNOWN (`lib/compliance.jq` + `lib/versions.jq`); `lib/summary.jq` only renders.
+`rds_patch_compliance_summary.sh` is a separate, read-only script that shows **only the high-level picture and the NON-COMPLIANT servers**. It reads the **same** `rds_patch_compliance_report.conf` as the full report (accounts, regions, rule, formats, e-mail and webhook settings; its files are named `<prefix>_summary_...`), and options override it. It runs the full report (`rds_patch_compliance_report.sh -F json`, with a temporary copy of the conf that switches off files and alerts) for the scan, so the counting is identical: valid RDS minor upgrade targets only, same major line, Oracle same patch line, deprecated versions as UNKNOWN (`lib/compliance.jq` + `lib/versions.jq`); `lib/summary.jq` only renders.
 
 ```bash
 ./rds_patch_compliance_summary.sh -P prod,nonprod -r us-east-1,ap-south-1              # txt to the screen
@@ -55,11 +57,11 @@ The zip is slim (v1.3.2): one top-level folder `rds-patch-compliance/` with only
 ./rds_patch_compliance_summary.sh --merge ~/compliance -F txt,html,csv -o ~/combined      # offline merge, 0 AWS calls (v1.3.0)
 ```
 
-Options: `-P` (repeatable), `-r` / `--all-regions` (with `--no-discover`, `--probe-parallel N`, see [Regions](#regions-discovery-and-region-wise-breakdown-v120)), `-e`, `-i`, `--max-behind N` (default 2: NON-COMPLIANT when versions_behind > 2, i.e. 3 or more), `--warn-days`, `--oracle-any-patch-line`, `--exceptions FILE` (v1.6.0, passed through to the full report), `-F txt,html,csv` (default txt to the screen; html / csv / several formats need `-o`), `--prefix`, `--fail-on-noncompliant` (exit 5), `--alert-email`, `--alert-webhook`, `--alert-webhook-format slack|json`, `--alert-on noncompliant|always`, `--alert-from`, `-v`.
+Options: `-P` (repeatable), `-r` / `--all-regions` (with `--no-discover`, `--probe-parallel N`, see [Regions](#regions-discovery-and-region-wise-breakdown-v120)), `-e`, `-i`, `--max-behind N` (default 2: NON-COMPLIANT when versions_behind > 2, i.e. 3 or more), `--warn-days`, `--oracle-any-patch-line`, `--exceptions FILE` (v1.6.0, passed through to the full report), `-F txt,html,csv` (default from the conf; `-o ''` prints one format on the screen; several formats need `-o`), `-o`, `--prefix`, `--fail-on-noncompliant` (exit 5), `--alert-email`, `--alert-webhook`, `--alert-webhook-format slack|json`, `--alert-on noncompliant|always`, `--alert-from`, `--attach-html yes|no`, `--attach-csv yes|no`, `--attach-prefix NAME`, `--mail-timeout SEC`, `--config FILE`, `-v`. `json` in the conf's `formats` is skipped for the summary.
 
-Output: header (run time UTC + IST, accounts / regions, the `Regions  : N checked, M with databases, K empty, E errors` count line - no region name lists, the rule), overall totals and % compliant, a **per-region** table (regions with databases or an AWS error, plus an All-regions row), per engine the major-version breakdown with compliant / non-compliant / unknown and % plus the latest minor per major (Oracle per patch line), key flags as counts (past standard support, support ending within N days, auto minor upgrade off, pending maintenance), then the **NON-COMPLIANT servers** (`!!` lines in txt, red table in HTML; account, region, engine, identifier, current -> latest minor, behind, support flag; most behind first, then name) or `*** All servers compliant ***`, and the UNKNOWN servers with the reason. Compliant servers are not listed. CSV: `<prefix>_<UTC stamp>_noncompliant.csv` (non-compliant rows only) + `<prefix>_<UTC stamp>_summary.csv` (overall, engine, major and flag rows) + `<prefix>_<UTC stamp>_regions.csv` (one row per account + region with databases or an AWS error, plus `ALL`; empty regions are only counted). Exit codes: 0, 1 usage, 2 pre-check / scan failed, 3 bad `--merge` input, 4 output, 5 non-compliant with `--fail-on-noncompliant`.
+Output: header (run time UTC + IST, accounts / regions, the `Regions  : N checked, M with databases, K empty, E errors` count line - no region name lists, the rule), overall totals and % compliant, a **per-region** table (regions with databases or an AWS error, plus an All-regions row), per engine the major-version breakdown with compliant / non-compliant / unknown and % plus the latest minor per major (Oracle per patch line), key flags as counts (past standard support, support ending within N days, auto minor upgrade off, pending maintenance), then the **NON-COMPLIANT servers** (`!!` lines in txt, red table in HTML; account, region, engine, identifier, current -> latest minor, behind, support flag; most behind first, then name) or `*** All servers compliant ***`, and the UNKNOWN servers with the reason. Compliant servers are not listed. CSV: `<prefix>_<UTC stamp>_noncompliant.csv` (non-compliant rows only) + `<prefix>_<UTC stamp>_summary.csv` (overall, engine, major and flag rows) + `<prefix>_<UTC stamp>_regions.csv` (one row per account + region with databases or an AWS error, plus `ALL`; empty regions are only counted). Exit codes: 0, 1 usage (including a missing conf setting), 2 pre-check / scan failed, 3 bad `--merge` input, 4 output, 5 non-compliant with `--fail-on-noncompliant`.
 
-**Save and merge (summary 1.3.0).** `--save-data [FILE.json]` writes the same raw data file as the full report (default `rds_patch_<ACCOUNTID>_<YYYYMMDD>.json` in the `-o` directory), so files from either script are interchangeable. `--merge FILE|DIR...` builds one summary from such files with jq only (0 AWS calls, Git Bash safe: CRLF `jq.exe`, `C:\...` paths, spaces): the newest `collected_at` wins per account, days to end of support / maintenance are recomputed at merge time, a bad or missing input exits 3. `--max-behind`, `--warn-days`, `--oracle-any-patch-line` (patch-line counting is redone from the saved targets), `--exceptions FILE` (v1.6.0), `--fail-on-noncompliant` and the alert options work with `--merge`; `-P/-r/-A/--no-discover/--probe-parallel/-e/-i/--save-data` are rejected. Merged output adds `Merged   : N file(s), offline` in the header (no region names), a **PER ACCOUNT** table (collected time, regions with databases, totals, %), and a **MERGED INPUTS** list (file, collected, accounts, used / superseded). All summaries now also write `<prefix>_<UTC stamp>_accounts.csv`; single-account file names carry the account number.
+**Save and merge (summary 1.3.0).** `--save-data [FILE.json]` writes the same raw data file as the full report (default `rds_patch_<ACCOUNTID>_<YYYYMMDD>.json` in the `-o` directory), so files from either script are interchangeable. `--merge FILE|DIR...` (formats from the conf unless `-F` is given; the conf's profiles / regions / engines / identifiers are ignored) builds one summary from such files with jq only (0 AWS calls, Git Bash safe: CRLF `jq.exe`, `C:\...` paths, spaces): the newest `collected_at` wins per account, days to end of support / maintenance are recomputed at merge time, a bad or missing input exits 3. `--max-behind`, `--warn-days`, `--oracle-any-patch-line` (patch-line counting is redone from the saved targets), `--exceptions FILE` (v1.6.0), `--fail-on-noncompliant` and the alert options work with `--merge`; `-P/-r/-A/--no-discover/--probe-parallel/-e/-i/--save-data` are rejected. Merged output adds `Merged   : N file(s), offline` in the header (no region names), a **PER ACCOUNT** table (collected time, regions with databases, totals, %), and a **MERGED INPUTS** list (file, collected, accounts, used / superseded). All summaries now also write `<prefix>_<UTC stamp>_accounts.csv`; single-account file names carry the account number.
 
 Samples: [merged summary txt](samples/sample_summary_merged.txt), [merged summary html](samples/sample_summary_merged.html), [txt](samples/sample_summary.txt), [html](samples/sample_summary.html), [regions csv](samples/sample_summary_regions.csv). Tests: `tests/run_summary_tests.sh` (mock AWS; boundaries 2/3, `--max-behind`, all-compliant, unknown, Oracle, multi-profile, numbers equal to the full report, alerts, shellcheck); `tests/validate_cli.sh` also runs it through the real AWS CLI against the local fake endpoint.
 
@@ -286,7 +288,7 @@ Approved exceptions for servers you know are non-compliant (decommission planned
 * **File:** `--exceptions FILE` (config `exceptions = FILE`). The default is `compliance_exceptions.conf` next to the script, if present. With no file the feature is off and the reports are exactly as before. Start from [compliance_exceptions.conf.example](compliance_exceptions.conf.example). The real file is in `.gitignore`.
 * **Format:** all five fields are required. account_id is 12 digits. The identifier is exact and case-insensitive, with no wildcards and no region. scope is `patch`, `backup` or `patch,backup`. expires is a mandatory `YYYY-MM-DD` (UTC) and is the last day the exception applies. `#` comments and blank lines are ignored.
 * **Validation:** strict. A missing field, a bad account, scope or date, or a duplicate account + identifier for the same scope stops the run (exit 1) with `file:line`.
-* **Matched, not expired:** a **NON-COMPLIANT** server is shown as **Compliant (exception)** and counted as compliant in every %. The evaluated status is kept in `actual_status`. An **UNKNOWN** server stays **UNKNOWN**; the exception is still listed against it (exception fields are filled in) but the status and counts do not change. Flags: **expiring soon** (14 days or less) and **no longer needed** (the server is compliant anyway).
+* **Matched, not expired:** a **NON-COMPLIANT** server is shown as **Compliant (exception)** and counted as compliant in every %. The evaluated status is kept in `actual_status`. An **UNKNOWN** server stays **UNKNOWN**; the exception is still listed against it (exception fields are filled in) but the status and counts do not change. Flags: **expiring soon** (`exception_warn_days` days or less, default 14) and **no longer needed** (the server is compliant anyway).
 * **Expired:** the server is evaluated normally and flagged **exception expired**. The log warns about expired entries and about entries that match no server.
 * **When applied:** only when the report is built. `--save-data` files never change.
 * **Outputs:**
@@ -302,15 +304,16 @@ Approved exceptions for servers you know are non-compliant (decommission planned
 # get the tools in CloudShell (once)
 git clone https://github.com/manideepgrandhi/rds-patch-compliance.git ~/rds-patch-compliance && cd ~/rds-patch-compliance
 
-./rds_patch_compliance_report.sh                                 # current region, text to the screen
+./rds_patch_compliance_report.sh                                 # every setting from rds_patch_compliance_report.conf
+./rds_patch_compliance_report.sh -r us-east-1 -F text -o '' -l ''  # one region, text on the screen, no files
 ./rds_patch_compliance_report.sh -r us-east-1,ap-south-1 -F html -o ~/compliance
 ./rds_patch_compliance_report.sh -P prod,nonprod --all-regions -F csv,html,txt,json -o ~/compliance
 ./rds_patch_compliance_report.sh -e 'aurora-*' -i 'prod-*' --non-compliant-only
 ./rds_patch_compliance_report.sh --max-behind 1 --warn-days 365 --fail-on-noncompliant   # exit 5 if any NON-COMPLIANT
-./rds_patch_compliance_report.sh --config rds_patch_compliance_report.conf.example --dry-run
+./rds_patch_compliance_report.sh --config my.conf --dry-run      # another complete copy of the conf
 ```
 
-More in [EXAMPLES.md](EXAMPLES.md). `--help` lists every option.
+More in [EXAMPLES.md](EXAMPLES.md), each with its sample output. `--help` lists every option and, in brackets, the value the conf currently has. Every default in this table is the value shipped in `rds_patch_compliance_report.conf`.
 
 | Option | Meaning |
 |---|---|
@@ -323,16 +326,17 @@ More in [EXAMPLES.md](EXAMPLES.md). `--help` lists every option.
 | `--non-compliant-only` | only NON-COMPLIANT rows |
 | `--fail-on-noncompliant` | exit 5 when any NON-COMPLIANT |
 | `-T, --tag-columns` | ignored since v1.4.0 (warning); tag columns are no longer shown |
-| `-F, --format` / `-o, --output-dir` / `--prefix` | `text,csv,json,html` (`txt` = text) / folder / file prefix |
+| `-F, --format` / `-o, --output-dir` / `--prefix` | `text,csv,json,html` (`txt` = text) / folder (`-o ''` = print one format on the screen) / file prefix |
 | `--top N` | deprecated in v1.3.1: accepted and ignored with a warning (the most-behind list was removed) |
-| `-l, --log-file` | append timestamped log lines |
-| `--alert-email`, `--alert-webhook`, `--alert-webhook-format slack|json`, `--alert-on noncompliant|always`, `--alert-test` | optional alerts (Slack text truncated at 35 000 chars) |
+| `-l, --log-file` | append timestamped log lines (`-l ''` = no log file) |
+| `--alert-email`, `--alert-webhook`, `--alert-webhook-format slack|json`, `--alert-on noncompliant|always`, `--alert-from`, `--alert-test` | optional alerts, see [Alerts](#alerts-html-e-mail-slack-webhook) |
+| `--attach-html yes|no` / `--attach-csv yes|no` / `--attach-prefix NAME` / `--mail-timeout SEC` | e-mail attachments (sendmail only), their short name, and the mail command time limit |
 | `--save-data [FILE.json]` | also write the raw data for a later `--merge` (v1.3.0) |
 | `--merge FILE\|DIR...` | offline merge of `--save-data` files, 0 AWS calls; `-o combined.html` names the output (v1.3.0) |
 | `--exceptions FILE` | compliance exceptions (v1.6.0); default `compliance_exceptions.conf` next to the script, if present |
 | `--tz ZONE` | second time zone for the generated time (default: Asia/Kolkata) |
-| `--config FILE` | key=value file, **parsed, never sourced**; CLI options override it; credentials are refused |
-| `--aws-timeout`, `--max-attempts`, `--keep-workdir`, `--dry-run`, `-v` | behaviour |
+| `--config FILE` | use this complete conf instead of the one next to the script; **parsed, never sourced**; CLI options override it; credentials are refused |
+| `--aws-timeout`, `--max-attempts`, `--keep-workdir`, `--dry-run`, `-v` | behaviour (`--dry-run` also prints the settings in effect) |
 
 ### Exit codes
 
@@ -363,18 +367,43 @@ More in [EXAMPLES.md](EXAMPLES.md). `--help` lists every option.
 
 `sts:GetCallerIdentity` needs no permission. DocumentDB and Neptune use the same `rds:` actions. Without `rds:DescribeDBMajorEngineVersions` the report still works; support dates show `unknown`. `rds:DescribeGlobalClusters` (v1.4.0) is used for Aurora global database membership; without it the report still works and membership shows as `unknown`. `iam:ListAccountAliases` (v1.5.0) is optional: without it accounts show the number only (or the config name). The AWS managed `ReadOnlyAccess` policy also covers these.
 
+## Alerts (HTML e-mail, Slack, webhook)
+
+Set `alert_emails` / `alert_webhooks` in the conf (or `--alert-email` / `--alert-webhook`). `alert_on = noncompliant` sends only when a server is NON-COMPLIANT or an AWS call failed; `always` sends every run.
+
+* **E-mail with `sendmail`** (checked first): an HTML message with a plain-text copy, and two short-named attachments, `patch_compliance_YYYY-MM-DD.html` (the full report) and `patch_compliance_YYYY-MM-DD.csv` (the per-server CSV). The regions CSV is never attached. Choose with `attach_html`, `attach_csv`, `attach_prefix` (or `--attach-html`, `--attach-csv`, `--attach-prefix`).
+* **E-mail with only `mail` / `mailx`**: the text summary alone, no HTML, no attachments.
+* **What the e-mail shows**: a status banner (NON-COMPLIANT / ERRORS / COMPLIANT), cards (Resources, Compliant, Non-compliant, Unknown, Pending), the rule, then a table of the NON-COMPLIANT servers, one of the UNKNOWN servers, and one of AWS errors (regions that may be incomplete). Columns: Account, Server (with region), Engine, Current to target, Reason. Pending maintenance is only a count (details are in the HTML report). Report file paths are not in the e-mail; they print on the screen.
+* The mail command is stopped after `mail_timeout` seconds (default 60).
+* **Slack / generic webhook** payloads are unchanged: the full text report, cut at `slack_max_chars`.
+
+![Alert e-mail, NON-COMPLIANT run: banner, cards, and the failures tables](docs/sample_alert_email.png)
+
+Samples: [html](samples/sample_alert_email.html), [text](samples/sample_alert_email.txt).
+
 ## Configuration file
 
-See [rds_patch_compliance_report.conf.example](rds_patch_compliance_report.conf.example). `key = value`, `#` comments, lists comma-separated. The file is parsed line by line, never sourced, unknown keys and credential keys are errors.
+`rds_patch_compliance_report.conf` sits next to the scripts (it ships in the release zip) and is the one place for every setting; **both** scripts read it. Format: `key = value`, `## ` notes, lists comma-separated, yes / no for switches. The file is parsed line by line, never sourced; unknown keys and credential keys are errors. A short note above each key says what it does, the allowed values and an example.
+
+* **Automatic.** No flag needed. The startup output says which file was used: `Settings: /path/rds_patch_compliance_report.conf (loaded automatically from the script folder)`.
+* **Complete.** The scripts have no built-in values, so every key must be present. A missing one stops the run, before any AWS call, and names it: `missing required setting(s): max_behind`. An empty value is allowed where the note says what empty means.
+* **`--config FILE`** runs with another complete copy (`cp rds_patch_compliance_report.conf my.conf`) instead. It replaces the conf next to the script; it does not merge with it.
+* **Command line wins** for one value at a time: `--max-behind 3`, `-r us-east-1` (switches off `all_regions`), `-A` (clears `regions`), `-o ''`.
+* **Sections**: accounts and regions (`profiles`, `regions`, `all_regions`, `discover`, `probe_parallel`, `engines`, `identifiers`); rule (`max_behind`, `warn_days`, `non_compliant_only`, `oracle_any_patch_line`, `fail_on_noncompliant`, `exceptions`, `exception_warn_days`); report files (`formats`, `output_dir`, `prefix`, `tz`, `log_file`, `verbose`); alerts (`alert_emails`, `alert_from`, `alert_on`, `attach_html`, `attach_csv`, `attach_prefix`, `mail_timeout`, `alert_webhooks`, `alert_webhook_format`, `slack_max_chars`, `webhook_timeout`, `webhook_retries`); AWS calls (`aws_timeout`, `max_attempts`, `aws_retry_mode`); and account names at the end (`111111111111 = prod-payments`).
+* **Shipped values**: all regions, probe first, `csv,html,txt` files into `./reports` (created if missing), log in `./reports/run.log`. Use `-o ''` for a quick look on the screen. Fixed internal limits (error text trimmed at 400 characters, names at 64, at most 32 parallel probes) are not settings.
+* The summary script uses the same file; its CLI flags override it, and its files get `_summary` after the prefix.
+* **Upgrading from 1.7.1 or earlier:** an old, partial conf now stops with `missing required setting(s)`; start from the shipped file and copy your values in. `rds_patch_compliance_report.conf.example` is the old example and is superseded; it is kept for now.
 
 ## Tests
 
 No AWS account is used and nothing can reach AWS.
 
-* `tests/run_tests.sh` - 500+ checks against `tests/mock/aws` (realistic fleet: Aurora PostgreSQL 11/12/14/15/16 incl. Extended Support, Aurora MySQL 3, RDS PostgreSQL 13/16/17, MySQL 8.0/8.4, MariaDB, SQL Server, Oracle, Multi-AZ DB cluster, DocumentDB, Neptune). Covers counting only from ValidUpgradeTarget (the mock's full list differs on purpose), major targets excluded, the default auto-upgrade target, current version not returned, pending-actions text, version compare units (`15.10 > 15.9`, Aurora MySQL, SQL Server, Oracle), the 2/3 boundary, `--max-behind`, lookup failure (UNKNOWN), deprecated version, lifecycle API missing / denied, multi-profile / multi-region, all regions, filters, outputs, alerts (local stubs), region discovery (empty regions skipped, cluster-only region, probe AccessDenied scanned anyway, `--no-discover`, `-r` without probe, parallel probes faster than serial with the same result, dry-run, `aws_calls`), the region breakdown adding up to the totals in every format, a 3000-instance fleet (no ARG_MAX issues), v1.3.0 `--save-data` / `--merge` (names, contents, read-only calls, zero AWS calls during merge, newer file wins, days recomputed, exit 3 inputs, Windows paths with spaces and a CRLF `jq` stub), and that no file is written into the tool folder. When node, `puppeteer-core` (on `NODE_PATH`) and Chrome are present it also runs `tests/browser_check.js`: filters, recomputed totals and per-region rows, and the CSV export (quoting, BOM, formula guard). **Guard:** it refuses to run unless `aws` on PATH is the mock, and sets fake credentials and a dead endpoint.
+* `tests/run_tests.sh` - 690+ checks (including the conf file, `--config`, CLI overrides, the HTML e-mail structure through a fake sendmail, the mail / mailx fallback, and output byte-identical to v1.7.1) - plus the original 500+ checks against `tests/mock/aws` (realistic fleet: Aurora PostgreSQL 11/12/14/15/16 incl. Extended Support, Aurora MySQL 3, RDS PostgreSQL 13/16/17, MySQL 8.0/8.4, MariaDB, SQL Server, Oracle, Multi-AZ DB cluster, DocumentDB, Neptune). Covers counting only from ValidUpgradeTarget (the mock's full list differs on purpose), major targets excluded, the default auto-upgrade target, current version not returned, pending-actions text, version compare units (`15.10 > 15.9`, Aurora MySQL, SQL Server, Oracle), the 2/3 boundary, `--max-behind`, lookup failure (UNKNOWN), deprecated version, lifecycle API missing / denied, multi-profile / multi-region, all regions, filters, outputs, alerts (local stubs), region discovery (empty regions skipped, cluster-only region, probe AccessDenied scanned anyway, `--no-discover`, `-r` without probe, parallel probes faster than serial with the same result, dry-run, `aws_calls`), the region breakdown adding up to the totals in every format, a 3000-instance fleet (no ARG_MAX issues), v1.3.0 `--save-data` / `--merge` (names, contents, read-only calls, zero AWS calls during merge, newer file wins, days recomputed, exit 3 inputs, Windows paths with spaces and a CRLF `jq` stub), and that no file is written into the tool folder. When node, `puppeteer-core` (on `NODE_PATH`) and Chrome are present it also runs `tests/browser_check.js`: filters, recomputed totals and per-region rows, and the CSV export (quoting, BOM, formula guard). **Guard:** it refuses to run unless `aws` on PATH is the mock, and sets fake credentials and a dead endpoint.
 * `tests/validate_cli.sh` - replays every command line the script issues through the **real** AWS CLI v2 with fake credentials and a dead endpoint (`127.0.0.1:9`); checks mock output shapes against `--generate-cli-skeleton output`; and runs the script with the real CLI against a local fake endpoint that pages every list (Marker) to prove pagination, and `-A` against a region-aware fake endpoint to prove each discovery probe is a single request, a denied probe becomes an error region that is still scanned, and only regions with databases get a full scan. A wrapper refuses any real-CLI call without a loopback endpoint.
 
 ## Changelog
+
+* **Unreleased**: one conf file next to the scripts (`rds_patch_compliance_report.conf`, loaded automatically, every setting commented, nothing hardcoded; `--config FILE` replaces it, the command line overrides one value; a missing key stops the run naming it); the summary script reads the same conf; the alert e-mail is HTML with a text copy and short-named HTML and CSV attachments (sendmail first; mail / mailx send the text only); new keys `attach_html`, `attach_csv`, `attach_prefix`, `mail_timeout`, `webhook_timeout`, `webhook_retries`, `aws_retry_mode`, `exception_warn_days`. Reports are byte-identical to 1.7.1 for the same values. See [CHANGELOG.md](CHANGELOG.md).
 
 * **1.7.1**: Pending maintenance tab: the Action dropdown always lists the standard AWS action types with counts (0 greyed out; other types appended), plus a clickable Actions by type strip; the text report gets a By type line. CSV / JSON unchanged.
 * **1.7.0**: the HTML report has two tabs, **Patch compliance** and **Pending maintenance** (one flat list of actions, soonest first, with its own filters); one shared Export CSV layout on both tabs (one row per server, pending actions summarised at the end); servers link between the tabs; Aurora global database members sit together; the text report gets a PENDING MAINTENANCE section. CSV and JSON columns are unchanged. See [Report](#report).

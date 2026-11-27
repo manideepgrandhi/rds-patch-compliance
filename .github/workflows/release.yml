@@ -27,13 +27,15 @@ jobs:
           D=dist/rds-patch-compliance; mkdir -p "$D"
           # runtime only: no docs/, samples/, tests/, .github/
           for f in rds_patch_compliance_report.sh rds_patch_compliance_summary.sh lib README.md \
-                   rds_patch_compliance_report.conf.example compliance_exceptions.conf.example EXAMPLES.md LICENSE; do
+                   rds_patch_compliance_report.conf rds_patch_compliance_report.conf.example compliance_exceptions.conf.example EXAMPLES.md LICENSE; do
             [ -e "$f" ] && cp -a "$f" "$D/"
           done
           chmod +x "$D"/*.sh
           cd dist && zip -rqX rds-patch-compliance.zip rds-patch-compliance
           unzip -Z rds-patch-compliance.zip
           ! unzip -Z1 rds-patch-compliance.zip | grep -E '/(docs|samples|tests|\.github)/'
+          # the settings file must be in the zip: both scripts refuse to run without it
+          unzip -Z1 rds-patch-compliance.zip | grep -qx 'rds-patch-compliance/rds_patch_compliance_report.conf'
           # checksum published next to the zip; README install verifies it with sha256sum -c
           sha256sum rds-patch-compliance.zip > rds-patch-compliance.zip.sha256
           sha256sum -c rds-patch-compliance.zip.sha256
