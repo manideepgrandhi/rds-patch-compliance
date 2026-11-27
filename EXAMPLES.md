@@ -151,7 +151,7 @@ Output:
 
 ```text
 2026-11-27 09:57:03 [INFO] Settings: /home/cloudshell-user/rds-patch-compliance/rds_patch_compliance_report.conf (loaded automatically from the script folder)
-rds_patch_compliance_report.sh v1.7.1 dry run - no AWS calls are made
+rds_patch_compliance_report.sh v1.8.0 dry run - no AWS calls are made
   profiles : prod 
   regions  : all enabled per account; discovery probe (8 in parallel), full scan only where databases (or a probe error) are found
   filters  : 
@@ -347,7 +347,7 @@ Output:
 
 ```text
 2026-11-27 09:57:09 [INFO] Settings: /home/cloudshell-user/rds-patch-compliance/rds_patch_compliance_report.conf (loaded automatically from the script folder)
-rds_patch_compliance_report.sh v1.7.1 dry run - no AWS calls are made
+rds_patch_compliance_report.sh v1.8.0 dry run - no AWS calls are made
   profiles : prod 
   regions  : us-east-1 (queried directly, no probe)
   filters  : 

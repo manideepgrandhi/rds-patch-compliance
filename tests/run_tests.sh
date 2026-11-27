@@ -126,7 +126,7 @@ vce oracle-ee "${O}2026-10.mrp-2026-10.r1" 1 "${O}2026-07.mrp-2026-07.r10"
 
 echo "== usage / validation"
 t help 0 fleet --help;               has help out 'Exit codes'; has help out 'read-only'; has help out '--max-behind'; has help out 'describe-global-clusters'
-t version 0 fleet --version;         has version out '1\.7\.1'
+t version 0 fleet --version;         has version out '1\.8\.0'
 t badopt 1 fleet --bogus
 t badfmt 1 fleet -r us-east-1 -F xml
 t multinoout 1 fleet -r us-east-1 -F csv,html
@@ -768,7 +768,7 @@ if command -v node >/dev/null 2>&1 && [[ -x "${CHROME:-/usr/bin/google-chrome}" 
     chk "browser: existing checks still pass on a report with exceptions ${res:0:300}" test "$rc" -eq 0
 else echo "  skip exceptions browser check (node + puppeteer-core on NODE_PATH + Chrome not found)"; fi
 
-echo "== unreleased: conf file next to the script (settings, required keys, --config, CLI override)"
+echo "== v1.8.0: conf file next to the script (settings, required keys, --config, CLI override)"
 # newtool DIR [noconf]: a fresh copy of the tool (scripts + lib); the conf is copied in unless "noconf" is given.
 newtool() { mkdir -p "$1"; cp "$REPO_SCRIPT" "$HERE/../rds_patch_compliance_summary.sh" "$1/"; cp -r "$HERE/../lib" "$1/"
             [[ "${2:-}" == noconf ]] || cp "$HERE/../rds_patch_compliance_report.conf" "$1/"; }
@@ -854,7 +854,7 @@ RDS_PCR_NOW=1790000000 PATH="$NOAWS:$PATH" t ew3 0 fleet --config "$OUT/ew3.conf
 chk "exception_warn_days = 14: an exception ending in 5 days is 'expiring soon'" jq -e '[.rows[] | select(.identifier == "legacy-aurora-pg12") | .exception_flag] == ["expiring soon"]' "$OUT"/ew14/*.json
 chk "exception_warn_days = 3: the same exception is not flagged" jq -e '[.rows[] | select(.identifier == "legacy-aurora-pg12") | .exception_flag] == [""]' "$OUT"/ew3/*.json
 
-echo "== unreleased: HTML alert e-mail (fake sendmail), mail / mailx fallback, webhooks unchanged"
+echo "== v1.8.0: HTML alert e-mail (fake sendmail), mail / mailx fallback, webhooks unchanged"
 MAILPY="$HERE/check_alert_mime.py"
 SMD="$OUT/sm"; mkdir -p "$SMD/bin"
 cat >"$SMD/bin/sendmail" <<'SM'
@@ -920,7 +920,39 @@ em em_hook 0 fleet "${P2[@]}" -F text,csv -o "$SMD/rep4" --alert-webhook "$HOOK"
 chk "slack payload: full text report + 'Report files:' paths (unchanged)" bash -c "grep . '$OUT/webhook.txt' | tail -1 | jq -e '(.text | contains(\"PER ENGINE / MAJOR VERSION\")) and (.text | contains(\"Report files:\")) and (.text | contains(\"$SMD/rep4/\"))' >/dev/null"
 chk "the e-mail of the same run has no report paths" bash -c "python3 '$MAILPY' part '$SMD/em_hook.eml' text | grep -qF '$SMD' && exit 1 || exit 0"
 
-echo "== unreleased: report files are byte-identical to the v1.7.1 release (same data, equivalent settings)"
+
+# Compare two report directories. The only allowed difference is the tool version
+# (1.7.1 in the v1.7.1 release vs 1.8.0 now: HTML footer and the JSON version field).
+# Extra file names after the two directories (e.g. run.log) are ignored on both sides.
+same_dirs_except_ver() {
+    python3 - "$@" <<'CMPY'
+import re, sys, pathlib
+
+def norm(b):
+    b = re.sub(rb"(rds_patch_compliance_(?:report|summary)\.sh v)1\.\d+\.\d+", rb"\1X.Y.Z", b)
+    b = re.sub(rb'("version": ")1\.\d+\.\d+"', rb'\1X.Y.Z"', b)
+    return b
+
+old, new, *skip = sys.argv[1:]
+skip = set(skip)
+old, new = pathlib.Path(old), pathlib.Path(new)
+
+def rels(root):
+    return {p.relative_to(root).as_posix(): p for p in root.rglob("*") if p.is_file() and p.name not in skip}
+
+a, b = rels(old), rels(new)
+if a.keys() != b.keys():
+    print("name mismatch: only old", sorted(set(a) - set(b)), "only new", sorted(set(b) - set(a)))
+    sys.exit(1)
+for rel in sorted(a):
+    if norm(a[rel].read_bytes()) != norm(b[rel].read_bytes()):
+        print("differs (beyond the version string):", rel)
+        sys.exit(1)
+CMPY
+}
+export -f same_dirs_except_ver
+
+echo "== v1.8.0: report files match the v1.7.1 release (same data; only the tool version may differ)"
 if git -C "$HERE/.." rev-parse -q --verify 'v1.7.1^{commit}' >/dev/null 2>&1; then
     OLD="$OUT/v171"; mkdir -p "$OLD"; git -C "$HERE/.." archive v1.7.1 | tar -x -C "$OLD"
     NEW="$OUT/v180"; newtool "$NEW"
@@ -930,13 +962,14 @@ if git -C "$HERE/.." rev-parse -q --verify 'v1.7.1^{commit}' >/dev/null 2>&1; th
         ( RDS_PCR_NOW=1790000000 MOCK_SCENARIO=$scen "$OLD/rds_patch_compliance_report.sh" --config "$OUT/names_only.conf" -P prod,nonprod -A -F csv,html,text,json -o "$OUT/cmp_o_$scen" ) >/dev/null 2>&1
         ( cd "$OUT/cmp_n_$scen" && RDS_PCR_NOW=1790000000 MOCK_SCENARIO=$scen "$NEW/rds_patch_compliance_report.sh" -P prod,nonprod -A -F csv,html,text,json -o "$OUT/cmp_n_$scen/r" ) >/dev/null 2>&1
         nf="$(find "$OUT/cmp_o_$scen" -type f | wc -l)"
-        chk "v1.7.1 vs new ($scen): $nf files, same names and identical bytes" bash -c "[[ $nf -ge 5 ]] && diff -r '$OUT/cmp_o_$scen' '$OUT/cmp_n_$scen/r'"
+        chk "v1.7.1 vs new ($scen): at least 5 files" test "$nf" -ge 5
+        chk "v1.7.1 vs new ($scen): same names; identical apart from the 1.8.0 version string" same_dirs_except_ver "$OUT/cmp_o_$scen" "$OUT/cmp_n_$scen/r"
     done
     # formats / output_dir / prefix / tz taken from the shipped conf (no -F / -o on the command line)
     rm -rf "$OUT/cmp_c_o" "$OUT/cmp_c_n"; mkdir -p "$OUT/cmp_c_n"
     ( RDS_PCR_NOW=1790000000 MOCK_SCENARIO=fleet "$OLD/rds_patch_compliance_report.sh" --config "$OUT/names_only.conf" -P prod,nonprod -r us-east-1,ap-south-1 -F csv,html,text -o "$OUT/cmp_c_o" --tz Asia/Kolkata --prefix rds_patch_compliance -l "$OUT/cmp_c_o.log" ) >/dev/null 2>&1
     ( cd "$OUT/cmp_c_n" && RDS_PCR_NOW=1790000000 MOCK_SCENARIO=fleet "$NEW/rds_patch_compliance_report.sh" -P prod,nonprod -r us-east-1,ap-south-1 ) >/dev/null 2>&1
-    chk "v1.7.1 with flags vs new with the shipped conf only: identical files" bash -c "diff -r '$OUT/cmp_c_o' '$OUT/cmp_c_n/reports' | grep -v 'Only in .*/reports: run.log' | grep -c . | grep -qx 0"
+    chk "v1.7.1 with flags vs new with the shipped conf only: identical apart from the 1.8.0 version string" same_dirs_except_ver "$OUT/cmp_c_o" "$OUT/cmp_c_n/reports" run.log
     # Slack and JSON webhook payloads are the same as before
     for fmtw in slack json; do
         : >"$OUT/webhook.txt"; rm -rf "$OUT/cmp_w"; mkdir -p "$OUT/cmp_w"

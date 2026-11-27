@@ -1,6 +1,6 @@
 # Alert e-mail body (text or HTML), shared by rds_patch_compliance_report.sh and rds_patch_compliance_summary.sh.
 # Input: the report JSON (the `json` format of the report script).
-# Args:  $mode (text|html), $host, $tool (e.g. "rds_patch_compliance_report.sh v1.7.1"), $when (footer timestamp).
+# Args:  $mode (text|html), $host, $tool (e.g. "rds_patch_compliance_report.sh v1.8.0"), $when (footer timestamp).
 # The named constants below are typography only (same colours as the HTML report); every setting still comes
 # from the conf file / CLI, never from this file.
 # The e-mail lists what needs action: NON-COMPLIANT servers, UNKNOWN servers and AWS errors (regions that may be
