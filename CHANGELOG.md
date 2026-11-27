@@ -3,6 +3,9 @@
 Plain-English features for each published release. The What's new page is built from this file.
 Only GitHub releases are listed here (older README history before v1.3.1 is not a published release zip).
 
+## Unreleased
+- The old `rds_patch_compliance_report.conf.example` file has been removed. Use the shipped `rds_patch_compliance_report.conf`. The release zip no longer includes the old example.
+
 ## 1.8.0
 
 Released 27 Nov 2026 (IST).

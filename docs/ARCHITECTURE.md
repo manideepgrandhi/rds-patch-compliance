@@ -229,7 +229,6 @@ There is no separate `CHANGELOG` file and no `whats-new/` folder in this repo. T
 | `lib/summary.jq` | Rendering only for the summary script (text, HTML, the four CSVs, alert payload). |
 | `lib/compliance_page.js` | Inlined into the HTML report: the two tabs (v1.7.0), filters, cards, engine table, Global / Standalone checkboxes, search, Exceptions filter, Pending maintenance filters, cross-links, CSV export from both tabs. No network. |
 | `rds_patch_compliance_report.conf` | The settings file for both scripts, loaded automatically from the script folder. Every setting is in it with a short comment. Shipped in the release zip. |
-| `rds_patch_compliance_report.conf.example` | The old example config. Superseded by `rds_patch_compliance_report.conf`; kept for now. |
 | `lib/alert_email.jq` | Builds the HTML and text e-mail bodies (status banner, cards, the NON-COMPLIANT / UNKNOWN / AWS errors tables). Used by both scripts. |
 | `compliance_exceptions.conf.example` | Example exceptions file (copy to `compliance_exceptions.conf`, which is gitignored, or pass `--exceptions FILE`). |
 | `README.md` | User guide: install, rule, outputs, exceptions, IAM, tests, changelog. |
