@@ -217,7 +217,7 @@ flowchart LR
 
 ## 4. Use of every tracked file
 
-There is no separate `CHANGELOG` file and no `whats-new/` folder in this repo. The version history lives in the Changelog section of `README.md`.
+Release notes live in `CHANGELOG.md` and on the What's new page (`whats-new/`). The long technical version notes are in `REFERENCE.md`.
 
 | File or folder | Use |
 |---|---|
@@ -231,10 +231,11 @@ There is no separate `CHANGELOG` file and no `whats-new/` folder in this repo. T
 | `rds_patch_compliance_report.conf` | The settings file for both scripts, loaded automatically from the script folder. Every setting is in it with a short comment. Shipped in the release zip. |
 | `lib/alert_email.jq` | Builds the HTML and text e-mail bodies (status banner, cards, the NON-COMPLIANT / UNKNOWN / AWS errors tables). Used by both scripts. |
 | `compliance_exceptions.conf.example` | Example exceptions file (copy to `compliance_exceptions.conf`, which is gitignored, or pass `--exceptions FILE`). |
-| `README.md` | User guide: install, rule, outputs, exceptions, IAM, tests, changelog. |
+| `README.md` | Short user guide: what the tool does, quick start, statuses, most-used settings, and links to the other docs. |
+| `REFERENCE.md` | Full reference: engines, the rule, Oracle patch lines, the report, exceptions, options, IAM, alerts, the settings file, tests and version notes. Shipped in the release zip. |
 | `EXAMPLES.md` | Copy-paste examples, including the Exceptions section for v1.6.0. |
 | `docs/ARCHITECTURE.md` | This document: execution flow, diagrams, file and function reference. |
-| `docs/sample_report_html.png` | Screenshot of the HTML report, Patch compliance tab (cards and engine table), used in the README. |
+| `docs/sample_report_html.png` | Screenshot of the HTML report, Patch compliance tab (cards and engine table), used in the README and the reference. |
 | `docs/sample_report_pending.png` | Screenshot of the Pending maintenance tab (v1.7.0). |
 | `docs/sample_pending_action_types.png` | Pending maintenance tab: Actions by type strip and the Action list opened (v1.7.1). |
 | `docs/sample_report_pending_filters.png` | Pending maintenance tab with account and due filters on (v1.7.0). |
