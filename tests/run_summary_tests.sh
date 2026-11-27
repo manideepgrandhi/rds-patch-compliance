@@ -47,7 +47,7 @@ P2=(-P prod,nonprod -r us-east-1,ap-south-1)
 
 echo "== usage"
 t help 0 fleet --help; has help out 'versions_behind > --max-behind'
-t version 0 fleet --version; has version out '1.7.1'
+t version 0 fleet --version; has version out '1.8.0'
 t badopt 1 fleet --bogus
 t badfmt 1 fleet -r us-east-1 -F xml
 t htmlnoout 1 fleet -r us-east-1 -F html
@@ -253,7 +253,7 @@ has exc_live out 'old-aurora-pg11'
 has exc_live err 'Exceptions (patch): 3 applied'
 hasnt exc_live out 'legacy-aurora-pg12'
 
-echo "== unreleased: the summary reads the same conf (settings, --config, CLI override, e-mail)"
+echo "== v1.8.0: the summary reads the same conf (settings, --config, CLI override, e-mail)"
 MAILPY="$HERE/check_alert_mime.py"
 SC="$HERE/../rds_patch_compliance_report.conf"
 REQ="$(sed -n '/^readonly -a REQUIRED_KEYS=(/,/)$/p' "$HERE/../rds_patch_compliance_report.sh" | sed 's/^readonly -a REQUIRED_KEYS=(//; s/)$//' | tr -s ' \n' '\n' | grep .)"
@@ -325,7 +325,20 @@ chk "mail (no sendmail): text summary only" bash -c "grep -q '^RDS patch complia
 t em_hook 0 fleet --config "$OUT/hook.conf"
 chk "conf alert_webhooks: Slack payload unchanged (text summary in a code block)" bash -c "grep . '$OUT/hook.txt' | tail -1 | jq -e '.text | startswith(\"*[rds_patch_compliance_summary]\") and contains(\"OVERALL\")' >/dev/null"
 
-echo "== unreleased: summary output is identical to v1.7.1 (same data, equivalent settings)"
+
+# Compare two files. The only allowed difference is the tool version in the HTML footer.
+same_file_except_ver() {
+    python3 - "$1" "$2" <<'CMPY'
+import re, sys
+def norm(b):
+    b = re.sub(rb"(rds_patch_compliance_(?:report|summary)\.sh v)1\.\d+\.\d+", rb"\1X.Y.Z", b)
+    b = re.sub(rb'("version": ")1\.\d+\.\d+"', rb'\1X.Y.Z"', b)
+    return b
+sys.exit(0 if norm(open(sys.argv[1], "rb").read()) == norm(open(sys.argv[2], "rb").read()) else 1)
+CMPY
+}
+
+echo "== v1.8.0: summary output matches v1.7.1 (same data; only the tool version may differ)"
 if git -C "$HERE/.." rev-parse -q --verify 'v1.7.1^{commit}' >/dev/null 2>&1; then
     OLD="$OUT/v171"; mkdir -p "$OLD"; git -C "$HERE/.." archive v1.7.1 | tar -x -C "$OLD"
     printf '111111111111 = prod-payments\n222222222222 = nonprod-shared\n' >"$OUT/names_only.conf"
@@ -335,7 +348,13 @@ if git -C "$HERE/.." rev-parse -q --verify 'v1.7.1^{commit}' >/dev/null 2>&1; th
         ( RDS_PCR_NOW=1790000000 MOCK_SCENARIO=$scen RDS_PCS_FULL="$OLD/rds_patch_compliance_report.sh" "$OLD/rds_patch_compliance_summary.sh" -P prod,nonprod -A -F txt,html,csv -o "$OUT/sc_o_$scen" ) >"$OUT/sc_o_$scen.out" 2>/dev/null
         ( cd "$OUT/sc_n_$scen" && RDS_PCR_NOW=1790000000 MOCK_SCENARIO=$scen "$NEW/rds_patch_compliance_summary.sh" -P prod,nonprod -A -F txt,html,csv -o "$OUT/sc_n_$scen/r" ) >"$OUT/sc_n_$scen.out" 2>/dev/null
         chk "v1.7.1 vs new summary ($scen): screen text identical after the run" bash -c "grep -v 'Wrote' '$OUT/sc_o_$scen.out' | diff - <(grep -v Wrote '$OUT/sc_n_$scen.out')"
-        chk "v1.7.1 vs new summary ($scen): 6 files with identical bytes" bash -c "for x in .txt .html _summary.csv _noncompliant.csv _accounts.csv _regions.csv; do cmp -s \"\$(ls '$OUT/sc_o_$scen'/*\$x)\" \"\$(ls '$OUT/sc_n_$scen/r'/*\$x)\" || { echo \"differs: \$x\"; exit 1; }; done"
+        okf=1
+        for x in .txt .html _summary.csv _noncompliant.csv _accounts.csv _regions.csv; do
+            o="$(ls "$OUT/sc_o_$scen"/*"$x")"
+            n="$(ls "$OUT/sc_n_$scen/r"/*"$x")"
+            same_file_except_ver "$o" "$n" || { echo "       differs: $x"; okf=0; break; }
+        done
+        chk "v1.7.1 vs new summary ($scen): 6 files identical apart from the 1.8.0 version string" test "$okf" -eq 1
     done
 else echo "  skip byte-identical check against v1.7.1 (git tag v1.7.1 not available)"; fi
 

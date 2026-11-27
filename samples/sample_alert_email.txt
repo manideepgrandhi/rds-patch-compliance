@@ -36,4 +36,4 @@ Account                        Server  Region        Engine  Current → target 
 prod-payments (111111111111)   —       ca-central-1  —       —                 AccessDenied on describe-db-instances: explicit deny in a service control policy
 nonprod-shared (222222222222)  —       ca-central-1  —       —                 AccessDenied on describe-db-instances: explicit deny in a service control policy
 
-rds_patch_compliance_report.sh v1.7.1 · cloudshell-host · 2026-11-27 09:58:51 IST
+rds_patch_compliance_report.sh v1.8.0 · cloudshell-host · 2026-11-27 09:58:51 IST

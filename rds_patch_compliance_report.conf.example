@@ -1,4 +1,4 @@
-# SUPERSEDED (next release, see CHANGELOG Unreleased): the script now ships a complete, commented settings file, rds_patch_compliance_report.conf,
+# SUPERSEDED (since v1.8.0, see CHANGELOG): the script now ships a complete, commented settings file, rds_patch_compliance_report.conf,
 # that is loaded automatically from the script's folder. Edit that file instead. This old example is kept only for
 # reference; it is incomplete (a conf must contain every setting), so --config with this file stops with a
 # "missing required setting(s)" error.
