@@ -1,7 +1,7 @@
 # lib/compliance.jq - logic + rendering for rds_patch_compliance_report.sh
 include "versions" {search: "./"};   # lib/versions.jq: version parsing + minor candidate selection (shared with the sibling tools)
 # Modes ($mode): rows | finalize | text | csv | json | html | alert | vkey_cmp (tests)
-# Every mode gets: $now (epoch), $max_behind, $warn_days, $top_n, $tagcols, $f (filters), $nc_only; optional --argjson oracle_any (default false)
+# Every mode gets: $now (epoch), $max_behind, $warn_days, $exc_warn_days, $top_n, $tagcols, $f (filters), $nc_only; optional --argjson oracle_any (default false)
 
 # ------------------------------------------------------------------ helpers
 # h: HTML-escape any value.
@@ -158,7 +158,7 @@ def rows:
 # ------------------------------------------------------------------ compliance exceptions (v1.6.0)
 # $ARGS.named.exc = [null] or absent: feature off; [[entries]]: compliance_exceptions.conf entries (validated by the script).
 # An unexpired entry for the scope turns NON-COMPLIANT into COMPLIANT (actual_status keeps the evaluated one).
-# UNKNOWN is left UNKNOWN; exception fields are still filled in. expires = last valid UTC day; within 14 days ->
+# UNKNOWN is left UNKNOWN; exception fields are still filled in. expires = last valid UTC day; within $exc_warn_days days ->
 # "expiring soon"; actual already compliant -> "no longer needed"; past expiry -> normal status.
 # exc_list: the entries array, or null when the feature is off; exc_on: true when it is on.
 def exc_list: (($ARGS.named.exc // [null])[0]);
@@ -174,7 +174,7 @@ def exc_eval($e; $ok):
   else exc_left($e.expires) as $d
   | {exception: (if $d < 0 then "expired" else "yes" end), exception_reason: $e.reason, exception_expires: $e.expires,
      exception_flag: (if $d < 0 then "exception expired"
-                      else [ (if $ok then "no longer needed" else empty end), (if $d <= 14 then "expiring soon" else empty end) ] | join(", ") end)} end;
+                      else [ (if $ok then "no longer needed" else empty end), (if $d <= $exc_warn_days then "expiring soon" else empty end) ] | join(", ") end)} end;
 # exc_unmatched($scope; $rows): entries of this scope that match no row (typo or decommissioned server).
 def exc_unmatched($scope; $rows):
   [ exc_list[]? | select((.scopes | index([$scope])) != null) | . as $e | ($e.identifier | ascii_downcase) as $i
@@ -766,7 +766,7 @@ def html:
   + "<li><b>Regions:</b> \($ro | region_mode_txt | h). Empty regions are only counted; tables list regions with databases or an AWS error.</li>"
   + "<li><b>Pending maintenance</b> (second tab) = maintenance actions AWS has scheduled or offered that haven't been applied yet, one row per action (cluster actions, member instance actions and Aurora global database actions), soonest first. A server's <i>N pending</i> link opens its actions there. Auto-apply = AWS applies it in the next maintenance window after that date; forced = applied on that date even outside the window; no date = optional.</li>"
   + "<li><b>Global databases</b> (Aurora): membership from describe-global-clusters (one call per account). Overall status = the worst member; <i>region status mismatch</i> = members on the same version but with a different status (valid targets differ per region). Automatic minor version upgrade does not apply to global database members.</li>"
-  + (if exc_on then "<li><b>Exceptions</b> (compliance_exceptions.conf, scope patch): a listed NON-COMPLIANT server shows COMPLIANT (EXCEPTION) and counts as compliant until its expiry date (last valid UTC day); <i>actual</i> is the evaluated status. UNKNOWN stays UNKNOWN (the exception is still listed). Expired entries are evaluated normally; <i>expiring soon</i> = within 14 days; <i>no longer needed</i> = the server is compliant on its own.</li>" else "" end)
+  + (if exc_on then "<li><b>Exceptions</b> (compliance_exceptions.conf, scope patch): a listed NON-COMPLIANT server shows COMPLIANT (EXCEPTION) and counts as compliant until its expiry date (last valid UTC day); <i>actual</i> is the evaluated status. UNKNOWN stays UNKNOWN (the exception is still listed). Expired entries are evaluated normally; <i>expiring soon</i> = within \($exc_warn_days) days; <i>no longer needed</i> = the server is compliant on its own.</li>" else "" end)
   + "<li>Read-only: nothing was changed.</li></ul></details>"
   + "<script type=\"application/json\" id=\"pc-data\">" + page_data($r) + "</script>"
   + "</main><footer>\($r.meta.script | h) v\($r.meta.version | h) &middot; read-only</footer>"

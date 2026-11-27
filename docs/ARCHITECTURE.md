@@ -25,7 +25,7 @@ Output formats are text, CSV, JSON and a single-file HTML report. Several format
 
 ### The summary script
 
-`rds_patch_compliance_summary.sh` does not scan AWS itself. It runs `rds_patch_compliance_report.sh -F json` (or `--merge ... -F json`) and keeps that finalized JSON. All counting, including exceptions if they were applied by the full report, comes from there. `lib/summary.jq` only renders a short picture: totals, the NON-COMPLIANT list, UNKNOWN reasons, and optional txt / html / csv outputs plus alerts.
+`rds_patch_compliance_summary.sh` does not scan AWS itself. It reads the same `rds_patch_compliance_report.conf` as the full report (own loader, same required keys), writes a temporary copy of it with the output and alert settings switched off (`formats = json`, no output dir, no alerts, no fail exit), and runs `rds_patch_compliance_report.sh --config <that copy>` (or `--merge ...`) to get the finalized JSON. All counting, including exceptions if they were applied by the full report, comes from there. `lib/summary.jq` only renders a short picture: totals, the NON-COMPLIANT list, UNKNOWN reasons, and optional txt / html / csv outputs; the summary script sends its own alerts, with the same HTML e-mail (`lib/alert_email.jq`).
 
 It accepts `--exceptions FILE` (v1.6.0) and passes it through to the full report, including with `--merge`. If you do not pass the flag and `compliance_exceptions.conf` sits next to the scripts, the full report still loads it automatically when the summary script calls it. The summary script reports its own version as **1.6.0**.
 
@@ -35,11 +35,11 @@ It accepts `--exceptions FILE` (v1.6.0) and passes it through to the full report
 
 Numbered steps for `./rds_patch_compliance_report.sh ...`. Several steps are skipped on the `--merge`, `--dry-run` or `--alert-test` paths; those branches are called out.
 
-### 1. Parse options and the config file
+### 1. Load the conf file and parse options
 
-`parse_args` looks for `--config FILE` anywhere on the command line and loads it first (`load_config`). The file is parsed line by line, never sourced. Supported keys are `key = value`. Lines `111111111111 = prod-payments` are account display names. Unknown keys, and any credential key (`aws_access_key_id`, `aws_secret_access_key`, `aws_session_token`, `secret`, `password`), stop the run with exit 1.
+`parse_args` first looks for `--config FILE` on the command line. With none, the script loads `rds_patch_compliance_report.conf` from its own folder. The file is parsed line by line, never sourced. Supported keys are `key = value`; every setting must be present (`REQUIRED_KEYS`), and a missing key stops the run with exit 1, naming the key(s). The script has no built-in values: the conf is the single place for them. `111111111111 = prod-payments` lines are account display names. Unknown keys, and any credential key (`aws_access_key_id`, `aws_secret_access_key`, `aws_session_token`, `secret`, `password`), stop the run with exit 1. Booleans are strict yes / no. `validate` then logs which conf was used (`Settings: ... loaded automatically from the script folder` or `from --config`).
 
-Command-line options are then applied and **win** over the config. The first use of a list option such as `-P` or `-r` replaces the config list; later uses append.
+Command-line options are then applied and **win** over the conf, one value at a time. The first use of a list option such as `-P` or `-r` replaces the conf list; later uses append. `-r` switches off `all_regions`; `-A` clears the conf `regions`. `--merge` ignores the conf's scope keys (profiles, regions, all_regions, engines, identifiers); giving them on the command line is an error.
 
 ### 2. Validate, then load exceptions
 
@@ -131,7 +131,7 @@ These files are what `--merge` reads later.
 
 ### 9. Alerts and exit
 
-`send_alerts` runs if you set `--alert-email` and/or `--alert-webhook`. With `--alert-on noncompliant` (the default) it fires only when `summary.non_compliant + summary.errors` is greater than 0. `--alert-on always` always sends. The body is the text report. Slack payloads are truncated at 35 000 characters. E-mail uses `mail` / `mailx` / `sendmail`; webhooks use `curl`.
+`send_alerts` runs if you set `--alert-email` and/or `--alert-webhook`. With `--alert-on noncompliant` (the default) it fires only when `summary.non_compliant + summary.errors` is greater than 0. `--alert-on always` always sends. Slack / webhook bodies are the text report (truncated at `slack_max_chars`, default 35 000); webhooks use `curl` (`webhook_timeout`, `webhook_retries`). E-mail is built by `lib/alert_email.jq`: with `sendmail` an HTML message with a text copy plus the HTML report and the per-server CSV attached (`attach_html`, `attach_csv`, `attach_prefix`); with only `mail` / `mailx` the text summary alone. The e-mail shows the status, the counts, and a table of the NON-COMPLIANT and UNKNOWN servers and AWS errors; pending maintenance is only a count, and no report paths are listed.
 
 The default exit code is **0** even when servers are NON-COMPLIANT. With `--fail-on-noncompliant`, a NON-COMPLIANT count greater than 0 exits **5**. Excepted servers have already been counted as COMPLIANT, so they do not trigger exit 5. Partial AWS errors (a denied region, a failed probe) are listed under ERRORS and do not change the exit code.
 
@@ -152,7 +152,7 @@ The default exit code is **0** even when servers are NON-COMPLIANT. With `--fail
 
 ```mermaid
 flowchart TD
-  start["Start: rds_patch_compliance_report.sh"] --> parse["Parse options; load --config first"]
+  start["Start: rds_patch_compliance_report.sh"] --> parse["Load the conf (script folder or --config); parse options"]
   parse --> validate["Validate options"]
   validate --> loadexc["Load exceptions file, or leave the feature off"]
   loadexc -->|"Bad line"| exit1["Exit 1"]
@@ -228,7 +228,9 @@ There is no separate `CHANGELOG` file and no `whats-new/` folder in this repo. T
 | `lib/merge.jq` | Offline `--merge`: newest collection wins per account; optional recount of Oracle targets when the patch-line rule changes. |
 | `lib/summary.jq` | Rendering only for the summary script (text, HTML, the four CSVs, alert payload). |
 | `lib/compliance_page.js` | Inlined into the HTML report: the two tabs (v1.7.0), filters, cards, engine table, Global / Standalone checkboxes, search, Exceptions filter, Pending maintenance filters, cross-links, CSV export from both tabs. No network. |
-| `rds_patch_compliance_report.conf.example` | Example `key = value` config, including the `exceptions =` key and account-name lines. |
+| `rds_patch_compliance_report.conf` | The settings file for both scripts, loaded automatically from the script folder. Every setting is in it with a short comment. Shipped in the release zip. |
+| `rds_patch_compliance_report.conf.example` | The old example config. Superseded by `rds_patch_compliance_report.conf`; kept for now. |
+| `lib/alert_email.jq` | Builds the HTML and text e-mail bodies (status banner, cards, the NON-COMPLIANT / UNKNOWN / AWS errors tables). Used by both scripts. |
 | `compliance_exceptions.conf.example` | Example exceptions file (copy to `compliance_exceptions.conf`, which is gitignored, or pass `--exceptions FILE`). |
 | `README.md` | User guide: install, rule, outputs, exceptions, IAM, tests, changelog. |
 | `EXAMPLES.md` | Copy-paste examples, including the Exceptions section for v1.6.0. |
@@ -281,8 +283,9 @@ Grouped in the order a run uses them. Nested helpers are marked.
 | `need_arg` | Exit 1 when an option that needs a value is the last argument. |
 | `redact_url` | Keep only `scheme://host` so a webhook token never reaches the log. |
 | `json_array` | Print arguments as a compact JSON string array. |
-| `load_config` | Read `key = value` settings and `111111111111 = name` account names. Never sourced. |
-| `parse_args` | Load `--config` first, then apply options. Nested `reset_once` makes the first use of a list option replace the config value. |
+| `load_config` | Read `key = value` settings and `111111111111 = name` account names from the conf. Never sourced. Stops naming every missing required key. |
+| `to_bool` | Strict yes / no (also true / false / on / off / 1 / 0). |
+| `parse_args` | Load `--config` (or the conf next to the script) first, then apply options. Nested `reset_once` makes the first use of a list option replace the conf value. |
 | `validate` | Check and normalise every option, then load exceptions, before any AWS call. |
 | `filters_json` / `filters_text` | The `-e` / `-i` filters as JSON for jq, and a one-line header string. |
 
@@ -336,7 +339,9 @@ Grouped in the order a run uses them. Nested helpers are marked.
 | `render` | Print the finalized report as json, text, csv or html. HTML inlines `compliance_page.js`. |
 | `place` | Atomic copy into the output dir, mode `0640`, remember the path in `WRITTEN`. |
 | `write_outputs` | Render each `-F` format to stdout or to the stamped files; CSV also writes `_regions.csv`. |
-| `send_email_alert` | Send the text body with `mail` / `mailx`, else `sendmail`. |
+| `find_mailer` | `sendmail` first, then `/usr/sbin/sendmail`, `mail`, `mailx`. |
+| `alert_bodies` / `alert_attachments` / `mime_attach` | Build the text and HTML bodies with `lib/alert_email.jq`; pick the HTML report and per-server CSV (never the regions CSV); base64 attachments named `<attach_prefix>_YYYY-MM-DD.<ext>`. |
+| `send_email` | With sendmail: `multipart/mixed { alternative { text, html }, attachments }` (`-t -oi`). With `mail` / `mailx`: the text summary only. Runs under `timeout mail_timeout`. |
 | `send_webhook_alert` | POST the JSON payload with `curl`. The URL is passed on stdin, so it never shows in `ps`. |
 | `send_alerts` | Build the subject and body and send to every e-mail / webhook, honouring `--alert-on`. |
 | `dry_run_plan` | Print the AWS commands a real run would issue; call nothing. |
@@ -379,12 +384,13 @@ Grouped in the order a run uses them. Nested helpers are marked.
 |---|---|
 | `_log`, `log_info`, `log_warn`, `die` | Timestamped stderr logging and fatal exit. No `--log-file` of its own. |
 | `need_arg`, `add_list`, `redact_url` | Same helpers as the full report. |
-| `usage` / `parse_args` / `validate` | Options and checks, including `--exceptions FILE` (passed through to the full report). There is no `--config` or `--log-file`. |
+| `load_config` / `child_conf` | Read the same conf (own loader) and write the temporary child conf the full report runs with. |
+| `usage` / `parse_args` / `validate` | Options and checks, including `--config FILE`, `--exceptions FILE` (passed through to the full report) and the `--attach-*` / `--mail-timeout` options. There is no `--log-file`; the log file comes from the conf. |
 | `collect` | Run the full report (`-F json`, or `--merge ... -F json`) and keep its JSON as `$REPORT`. |
 | `detect_jq_eol`, `unix_eol`, `jqr` | LF-only jq output. |
 | `render` | Render `$REPORT` with `lib/summary.jq`. |
 | `write_outputs` | Without `-o`, text to stdout. With `-o DIR`: `<prefix>_[<ACCOUNTID>_]<UTC-stamp>.{txt,html}` and, for csv, `_summary.csv`, `_noncompliant.csv`, `_accounts.csv`, `_regions.csv`. The stamp is UTC, unlike the full report's local-time stamp. Text is also printed to the screen when `txt` is requested. |
-| `send_email_alert`, `send_webhook_alert`, `send_alerts` | Same idea as the full report; subject prefix is `[rds_patch_compliance_summary]`. |
+| `find_mailer`, `send_email`, `send_webhook_alert`, `send_alerts` | Same idea as the full report (HTML e-mail with sendmail, text only with mail / mailx); subject prefix is `[rds_patch_compliance_summary]`. |
 | `on_exit`, `on_signal`, `main` | Cleanup, interrupt, and the collect → write → alert flow. |
 
 ---

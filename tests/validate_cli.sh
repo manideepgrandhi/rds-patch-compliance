@@ -37,7 +37,7 @@ for s in "fleet -P prod,nonprod -r us-east-1,ap-south-1,eu-west-1" "fleet -P non
          "discover -P prod --all-regions" "discover -P prod --all-regions --no-discover"; do
     read -r scen args <<<"$s"
     # shellcheck disable=SC2086
-    MOCK_SCENARIO="$scen" PATH="$HERE/mock:$PATH" "$S" $args -F json >/dev/null 2>&1
+    MOCK_SCENARIO="$scen" PATH="$HERE/mock:$PATH" "$S" $args -F json -o '' -l '' >/dev/null 2>&1
 done
 jq -c 'select(.[0] != "--version" and .[0] != "configure")' "$MOCK_LOG" | sort -u >"$OUT/uniq.jsonl"
 echo "distinct command lines: $(wc -l <"$OUT/uniq.jsonl")"
@@ -109,7 +109,7 @@ for spec in "rds describe-db-clusters" "rds describe-db-instances" "rds describe
 done
 echo "mock response shapes matching CLI skeleton: $shape_ok/$n_shapes"
 
-MOCK_SCENARIO=fleet PATH="$HERE/mock:$PATH" "$S" -P prod,nonprod -r us-east-1,ap-south-1 -F json 2>/dev/null >"$OUT/fleet.json"
+MOCK_SCENARIO=fleet PATH="$HERE/mock:$PATH" "$S" -P prod,nonprod -r us-east-1,ap-south-1 -F json -o '' -l '' 2>/dev/null >"$OUT/fleet.json"
 # v1.4.0: no upgrade / modify command is generated any more
 if jq -e '[.rows[] | select(has("upgrade_command"))] | length == 0' "$OUT/fleet.json" >/dev/null && ! grep -q "modify-db" "$OUT/fleet.json"; then echo "no upgrade commands printed: OK"
 else echo "upgrade command still printed"; fail=$((fail + 1)); fi
@@ -125,10 +125,10 @@ case " \$* " in *" configure "*|*" --version "*) exec "$REAL_AWS" "\$@" ;; esac
 exec "$REAL_AWS" "\$@" --endpoint-url "http://127.0.0.1:\$(cat "$OUT/fport")"
 WRAP
 chmod +x "$OUT/realbin/aws"
-PATH="$OUT/realbin:$PATH" "$S" -r us-east-1 -F json >"$OUT/pag.json" 2>"$OUT/pag.err"; prc=$?
+PATH="$OUT/realbin:$PATH" "$S" -r us-east-1 -F json -o '' -l '' >"$OUT/pag.json" 2>"$OUT/pag.err"; prc=$?
 summ="$(jq -sc 'group_by(.action) | map({key: .[0].action, value: {requests: length, pages_after_first: (map(select(.marker != null)) | length)}}) | from_entries' "$OUT/freq.jsonl")"
 # the summary script through the same real CLI + fake endpoint: same numbers as the full report
-PATH="$OUT/realbin:$PATH" "$HERE/../rds_patch_compliance_summary.sh" -r us-east-1 >"$OUT/sum.txt" 2>"$OUT/sum.err"; src=$?
+(cd "$OUT" && PATH="$OUT/realbin:$PATH" "$HERE/../rds_patch_compliance_summary.sh" -r us-east-1 -F txt -o '' >"$OUT/sum.txt" 2>"$OUT/sum.err"); src=$?
 kill "$FAKE" 2>/dev/null; wait "$FAKE" 2>/dev/null
 want="$(jq -r '.summary | "OVERALL  : \(.total) servers/clusters | COMPLIANT \(.compliant) | NON-COMPLIANT \(.non_compliant) | UNKNOWN \(.unknown) | \(.pct_compliant)% compliant"' "$OUT/pag.json")"
 if [[ "$src" == 0 ]] && grep -qxF -- "$want" "$OUT/sum.txt" && grep -q '^!!! NON-COMPLIANT SERVERS (200)' "$OUT/sum.txt"; then
@@ -155,9 +155,9 @@ fi
 python3 "$HERE/fake_rds_endpoint.py" "$OUT/fport" "$OUT/dreq.jsonl" &
 FAKE=$!
 for _ in $(seq 50); do [[ -s "$OUT/fport" ]] && break; sleep 0.1; done
-PATH="$OUT/realbin:$PATH" "$S" -A --probe-parallel 3 -F json >"$OUT/disc.json" 2>"$OUT/disc.err"; drc=$?
+PATH="$OUT/realbin:$PATH" "$S" -A --probe-parallel 3 -F json -o '' -l '' >"$OUT/disc.json" 2>"$OUT/disc.err"; drc=$?
 cp "$OUT/dreq.jsonl" "$OUT/dreq1.jsonl"   # requests of the first (json) run only
-PATH="$OUT/realbin:$PATH" "$S" -A >"$OUT/disc.txt" 2>/dev/null
+PATH="$OUT/realbin:$PATH" "$S" -A -F text -o '' -l '' >"$OUT/disc.txt" 2>/dev/null
 kill "$FAKE" 2>/dev/null; wait "$FAKE" 2>/dev/null
 dsum="$(jq -sc '[.[] | select(.max_records == "20")] | group_by(.action) | map({key: .[0].action, value: {probes: length, regions: (map(.region) | unique), paged: (map(select(.marker != null)) | length)}}) | from_entries' "$OUT/dreq1.jsonl")"
 echo "discovery probes seen by the fake endpoint: $dsum"

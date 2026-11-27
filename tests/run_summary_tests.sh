@@ -5,9 +5,17 @@
 # Usage: tests/run_summary_tests.sh [-k]
 set -uo pipefail
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-S="$HERE/../rds_patch_compliance_summary.sh"
-FULL="$HERE/../rds_patch_compliance_report.sh"
+REPO_S="$HERE/../rds_patch_compliance_summary.sh"
 OUT="$(mktemp -d /tmp/rpcs_tests.XXXXXX)"
+# Both scripts load rds_patch_compliance_report.conf from their own folder: the suite runs a copy of the tool whose
+# conf holds the v1.7.1 built-in defaults (tests/fixtures/test_defaults.conf).
+BASE_CONF="$HERE/fixtures/test_defaults.conf"
+TOOL="$OUT/tool"; mkdir -p "$TOOL"
+cp "$HERE/../rds_patch_compliance_report.sh" "$REPO_S" "$TOOL/"; cp -r "$HERE/../lib" "$TOOL/"; cp "$BASE_CONF" "$TOOL/rds_patch_compliance_report.conf"
+S="$TOOL/rds_patch_compliance_summary.sh"
+FULL="$TOOL/rds_patch_compliance_report.sh"
+# mkconf FILE [key = value ...]: a complete conf = the test base plus overrides (the last duplicate wins).
+mkconf() { local f="$1" kv; shift; cp -- "$BASE_CONF" "$f"; for kv in "$@"; do printf '%s\n' "$kv" >>"$f"; done; }
 KEEP=0; [[ "${1:-}" == -k ]] && KEEP=1
 PASS=0; FAIL=0; LISTENER_PID=""
 export MOCK_LOG="$OUT/aws_calls.jsonl"
@@ -161,7 +169,7 @@ LISTENER_PID=$!
 for _ in $(seq 50); do [[ -s "$OUT/port" ]] && break; sleep 0.1; done
 HOOK="http://127.0.0.1:$(cat "$OUT/port")/hooks/T000/SECRET"
 t al_mail 0 fleet "${P2[@]}" --alert-email dba@example.com
-chk "e-mail subject + summary body" bash -c "grep -q 'NON-COMPLIANT:' '$MAIL_SINK' && grep -q 'OVERALL  : 22 servers' '$MAIL_SINK' && grep -q 'NON-COMPLIANT SERVERS (8)' '$MAIL_SINK'"
+chk "e-mail (mail stub, no sendmail): subject + text summary" bash -c "grep -q 'NON-COMPLIANT:' '$MAIL_SINK' && grep -q '^8 non-compliant of 22 servers' '$MAIL_SINK' && grep -q '^NON-COMPLIANT servers (8):' '$MAIL_SINK'"
 : >"$MAIL_SINK"
 t al_none 0 fleet -P prod -r us-east-1 -e docdb,neptune --alert-email dba@example.com
 chk "no alert when all compliant (alert-on noncompliant)" test ! -s "$MAIL_SINK"
@@ -202,7 +210,7 @@ sm m_rej4 1 --merge
 echo '{"x":1}' >"$OUT/bad.json"; sm m_bad 3 --merge "$OUT/bad.json"
 : >"$MAIL_SINK"
 sm m_alert 0 --merge "$MG" --alert-email dba@example.com
-chk "merge alert e-mail sent with summary body" bash -c "grep -q 'NON-COMPLIANT:' '$MAIL_SINK' && grep -q 'OVERALL  : 24 servers' '$MAIL_SINK'"
+chk "merge alert e-mail sent with the text summary" bash -c "grep -q 'NON-COMPLIANT:' '$MAIL_SINK' && grep -q '^9 non-compliant of 24 servers' '$MAIL_SINK'"
 CR="$OUT/crlfjq"; mkdir -p "$CR"; REALJQ="$(command -v jq)"
 printf '#!/bin/bash\n"%s" "$@" | sed '"'"'s/$/\\r/'"'"'; exit "${PIPESTATUS[0]}"\n' "$REALJQ" >"$CR/jq"; chmod +x "$CR/jq"
 mkdir -p "$OUT/drv/c/Users/DBA Team/patch data"; cp "$MG"/*.json "$OUT/drv/c/Users/DBA Team/patch data/"
@@ -245,8 +253,94 @@ has exc_live out 'old-aurora-pg11'
 has exc_live err 'Exceptions (patch): 3 applied'
 hasnt exc_live out 'legacy-aurora-pg12'
 
+echo "== unreleased: the summary reads the same conf (settings, --config, CLI override, e-mail)"
+MAILPY="$HERE/check_alert_mime.py"
+SC="$HERE/../rds_patch_compliance_report.conf"
+REQ="$(sed -n '/^readonly -a REQUIRED_KEYS=(/,/)$/p' "$HERE/../rds_patch_compliance_report.sh" | sed 's/^readonly -a REQUIRED_KEYS=(//; s/)$//' | tr -s ' \n' '\n' | grep .)"
+SREQ="$(sed -n '/^readonly -a REQUIRED_KEYS=(/,/)$/p' "$REPO_S" | sed 's/^readonly -a REQUIRED_KEYS=(//; s/)$//' | tr -s ' \n' '\n' | grep .)"
+chk "summary requires the same keys as the full report" test "$(sort <<<"$REQ")" = "$(sort <<<"$SREQ")"
+SW="$OUT/sumw"; mkdir -p "$SW"
+NOCONF="$OUT/noconf"; mkdir -p "$NOCONF"; cp "$REPO_S" "$NOCONF/"; cp -r "$HERE/../lib" "$HERE/../rds_patch_compliance_report.sh" "$NOCONF/"
+RDS_PCS_FULL="$NOCONF/rds_patch_compliance_report.sh" "$NOCONF/rds_patch_compliance_summary.sh" -P prod -r us-east-1 >"$OUT/noconf.out" 2>"$OUT/noconf.err"; chk "no conf next to the script: rc 1" test $? -eq 1
+has noconf err 'Config file not found'
+"$NOCONF/rds_patch_compliance_summary.sh" --help >"$OUT/noconf_help.out" 2>&1; chk "--help works without a conf" test $? -eq 0
+grep -vE '^(fail_on_noncompliant|aws_retry_mode)[[:space:]]*=' "$BASE_CONF" >"$OUT/miss.conf"
+t miss 1 fleet --config "$OUT/miss.conf" -P prod -r us-east-1; has miss err 'missing required setting(s): fail_on_noncompliant aws_retry_mode'
+mkconf "$OUT/bad.conf" 'alert_on = maybe'; t badconf 1 fleet --config "$OUT/bad.conf" -P prod -r us-east-1; has badconf err '--alert-on must be noncompliant or always'
+mkconf "$OUT/bool.conf" 'discover = sometimes'; t badbool 1 fleet --config "$OUT/bool.conf"; has badbool err "'discover' must be yes or no"
+mkconf "$OUT/mb1.conf" 'profiles = prod' 'regions = us-east-1' 'max_behind = 1'
+t cfg 0 fleet --config "$OUT/mb1.conf"
+has cfg out 'more than 1 valid minor versions behind the latest (2 or more)'; has cfg err '(from --config)'
+t cfgcli 0 fleet --config "$OUT/mb1.conf" --max-behind 2; has cfgcli out 'more than 2 valid minor versions behind the latest (3 or more)'
+t cfgauto 0 fleet -P prod -r us-east-1; has cfgauto err 'loaded automatically from the script folder'
+if [[ "$(grep -c 'Settings:' "$OUT/cfgauto.err")" == 1 ]]; then ok "cfgauto: the Settings line is printed once (not again by the scan)"; else bad "cfgauto: Settings line count is $(grep -c 'Settings:' "$OUT/cfgauto.err")"; fi
+# formats / output_dir / prefix from the conf; json is skipped; the scan's own outputs and alerts stay off
+rm -rf "$OUT/cf1"; : >"$MAIL_SINK"
+mkconf "$OUT/cf1.conf" 'profiles = prod' 'regions = us-east-1' 'formats = txt,csv,json,html' "output_dir = $OUT/cf1" 'prefix = acme' 'non_compliant_only = yes' 'alert_emails = dba@example.com' 'log_file ='
+t cf1 0 fleet --config "$OUT/cf1.conf"
+has cf1 err 'json is skipped'
+chk "conf formats / output_dir / prefix: files are <prefix>_summary_*" bash -c "cd '$OUT/cf1' && ls | grep -cE '^acme_summary_111111111111_[0-9]{8}_[0-9]{6}(\.txt|\.html|_summary\.csv|_noncompliant\.csv|_accounts\.csv|_regions\.csv)\$' | grep -qx 6"
+chk "no json / full-report files written by the scan (the scan runs with its own switched-off conf)" bash -c "! ls '$OUT/cf1' | grep -qE '\.json\$|^acme_[0-9]'"
+has cf1 out 'OVERALL  : 19 servers'
+chk "exactly one alert e-mail (the scan did not alert)" test "$(grep -c '^ARGS:' "$MAIL_SINK")" -eq 1
+t cf1p 0 fleet --config "$OUT/cf1.conf" --prefix literal -F txt -o "$OUT/cf1p"
+chk "CLI --prefix is used as given" bash -c "ls '$OUT/cf1p' | grep -qE '^literal_111111111111_[0-9]{8}_[0-9]{6}\.txt\$'"
+mkconf "$OUT/fail.conf" 'profiles = prod' 'regions = us-east-1' 'fail_on_noncompliant = yes'
+t cfail 5 fleet --config "$OUT/fail.conf"
+mkconf "$OUT/ar.conf" 'profiles = prod' 'all_regions = yes' 'discover = yes'
+: >"$MOCK_LOG"; t ar_r 0 fleet --config "$OUT/ar.conf" -r us-east-1
+chk "CLI -r replaces all_regions = yes (no describe-regions call)" test "$(jq -c 'select(index("describe-regions"))' "$MOCK_LOG" | wc -l)" -eq 0
+: >"$MOCK_LOG"; t ar_conf 0 discover --config "$OUT/ar.conf"
+chk "conf all_regions = yes is used (describe-regions called)" test "$(jq -c 'select(index("describe-regions"))' "$MOCK_LOG" | wc -l)" -ge 1
+# relative paths in the conf: the scan may run in another folder; the log folder is created
+RW="$OUT/relw"; mkdir -p "$RW"
+mkconf "$OUT/rel.conf" 'profiles = prod' 'regions = us-east-1' 'formats = txt' 'output_dir = ./reports' 'log_file = ./reports/run.log'
+( cd "$RW" && MOCK_SCENARIO=fleet "$S" --config "$OUT/rel.conf" --save-data ) >"$OUT/rel.out" 2>"$OUT/rel.err"; chk "relative output_dir / log_file with --save-data: rc 0" test $? -eq 0
+chk "data file + summary files land in ./reports, log written there" bash -c "ls '$RW/reports' | grep -q '^rds_patch_111111111111_' && ls '$RW/reports' | grep -q '\.txt\$' && test -s '$RW/reports/run.log'"
+# merge ignores the conf's scan scope
+mkconf "$OUT/mgscope.conf" 'profiles = prod,nonprod' 'all_regions = yes' 'engines = postgres' 'formats = txt' 'output_dir ='
+sm cm_plain 0 --merge "$MG"
+sm cm_conf 0 --config "$OUT/mgscope.conf" --merge "$MG"
+chk "merge ignores the conf's profiles / regions / engines" bash -c "diff <(grep OVERALL '$OUT/cm_plain.out') <(grep OVERALL '$OUT/cm_conf.out')"
+sm cm_P 1 --merge "$MG" -P prod; has cm_P err 'do not apply'
+# e-mail over a fake sendmail: HTML + text + attachments (the summary files), then mail / mailx fallbacks
+SMD="$OUT/sm"; mkdir -p "$SMD/bin"
+printf '#!/usr/bin/env bash\n{ printf "ARGS:"; printf " %%q" "$@"; printf "\\n"; } >>"${SENDMAIL_ARGS:?}"\ncat >"${SENDMAIL_MSG:?}"\n' >"$SMD/bin/sendmail"; chmod +x "$SMD/bin/sendmail"
+em() { local name="$1"; shift; SENDMAIL_MSG="$SMD/$name.eml" SENDMAIL_ARGS="$SMD/$name.args" PATH="$SMD/bin:$PATH" t "$name" "$@"; }
+TODAY="$(date -u +%Y-%m-%d)"
+rm -rf "$SMD/r1"; em em1 0 fleet "${P2[@]}" -F html,csv -o "$SMD/r1" --alert-email dba@example.com --alert-from rds@example.com
+chk "mime: alternative { text, html } + patch_compliance_<date>.html and .csv = the summary files" python3 "$MAILPY" mixed "$SMD/em1.eml" "$SMD/r1" --nc 8 --date "$TODAY" --csv-glob '*_noncompliant.csv'
+chk "mime: sendmail -t -oi, From and To headers" bash -c "grep -qx 'ARGS: -t -oi' '$SMD/em1.args' && grep -qx 'From: rds@example.com' '$SMD/em1.eml' && grep -qx 'To: dba@example.com' '$SMD/em1.eml'"
+chk "mime: same body as the full report's e-mail (first line, table)" bash -c "python3 '$MAILPY' part '$SMD/em1.eml' text | grep -q '^RDS patch compliance: NON-COMPLIANT' && python3 '$MAILPY' part '$SMD/em1.eml' html | grep -q 'old-aurora-pg11'"
+em em_none 0 fleet "${P2[@]}" -F txt --alert-email dba@example.com --attach-html no --attach-csv no --attach-prefix x
+chk "attach off: multipart/alternative only" python3 "$MAILPY" mixed "$SMD/em_none.eml" --parts none
+em em_pre 0 fleet "${P2[@]}" -F txt --alert-email dba@example.com --attach-prefix acme
+chk "attachments rendered on the fly when no file was written; --attach-prefix" python3 "$MAILPY" mixed "$SMD/em_pre.eml" --prefix acme --date "$TODAY"
+mkconf "$OUT/em.conf" 'alert_emails = conf@example.com' 'attach_html = no' 'formats = txt' 'mail_timeout = 5'
+em em_conf 0 fleet --config "$OUT/em.conf" "${P2[@]}"
+chk "conf alert_emails / attach_html drive the summary e-mail" bash -c "grep -qx 'To: conf@example.com' '$SMD/em_conf.eml' && python3 '$MAILPY' mixed '$SMD/em_conf.eml' --parts csv --date '$TODAY'"
+: >"$MAIL_SINK"; t em_mail 0 fleet "${P2[@]}" -F txt --alert-email dba@example.com
+chk "mail (no sendmail): text summary only" bash -c "grep -q '^RDS patch compliance: NON-COMPLIANT' '$MAIL_SINK' && ! grep -qiE 'multipart|base64|<html' '$MAIL_SINK'"
+: >"$OUT/hook.txt"; mkconf "$OUT/hook.conf" "alert_webhooks = $HOOK" 'profiles = prod' 'regions = us-east-1' 'formats = txt'
+t em_hook 0 fleet --config "$OUT/hook.conf"
+chk "conf alert_webhooks: Slack payload unchanged (text summary in a code block)" bash -c "grep . '$OUT/hook.txt' | tail -1 | jq -e '.text | startswith(\"*[rds_patch_compliance_summary]\") and contains(\"OVERALL\")' >/dev/null"
+
+echo "== unreleased: summary output is identical to v1.7.1 (same data, equivalent settings)"
+if git -C "$HERE/.." rev-parse -q --verify 'v1.7.1^{commit}' >/dev/null 2>&1; then
+    OLD="$OUT/v171"; mkdir -p "$OLD"; git -C "$HERE/.." archive v1.7.1 | tar -x -C "$OLD"
+    printf '111111111111 = prod-payments\n222222222222 = nonprod-shared\n' >"$OUT/names_only.conf"
+    NEW="$OUT/v180"; mkdir -p "$NEW"; cp "$REPO_S" "$HERE/../rds_patch_compliance_report.sh" "$SC" "$NEW/"; cp -r "$HERE/../lib" "$NEW/"
+    for scen in fleet oracle discover; do
+        rm -rf "$OUT/sc_o_$scen" "$OUT/sc_n_$scen"; mkdir -p "$OUT/sc_n_$scen"
+        ( RDS_PCR_NOW=1790000000 MOCK_SCENARIO=$scen RDS_PCS_FULL="$OLD/rds_patch_compliance_report.sh" "$OLD/rds_patch_compliance_summary.sh" -P prod,nonprod -A -F txt,html,csv -o "$OUT/sc_o_$scen" ) >"$OUT/sc_o_$scen.out" 2>/dev/null
+        ( cd "$OUT/sc_n_$scen" && RDS_PCR_NOW=1790000000 MOCK_SCENARIO=$scen "$NEW/rds_patch_compliance_summary.sh" -P prod,nonprod -A -F txt,html,csv -o "$OUT/sc_n_$scen/r" ) >"$OUT/sc_n_$scen.out" 2>/dev/null
+        chk "v1.7.1 vs new summary ($scen): screen text identical after the run" bash -c "grep -v 'Wrote' '$OUT/sc_o_$scen.out' | diff - <(grep -v Wrote '$OUT/sc_n_$scen.out')"
+        chk "v1.7.1 vs new summary ($scen): 6 files with identical bytes" bash -c "for x in .txt .html _summary.csv _noncompliant.csv _accounts.csv _regions.csv; do cmp -s \"\$(ls '$OUT/sc_o_$scen'/*\$x)\" \"\$(ls '$OUT/sc_n_$scen/r'/*\$x)\" || { echo \"differs: \$x\"; exit 1; }; done"
+    done
+else echo "  skip byte-identical check against v1.7.1 (git tag v1.7.1 not available)"; fi
+
 echo "== hygiene"
-chk "shellcheck summary script" shellcheck "$S"
+chk "shellcheck summary script" shellcheck "$REPO_S"
 chk "shellcheck this test" shellcheck "$HERE/run_summary_tests.sh"
 AFTER="$(cd "$HERE/.." && find . -path ./.git -prune -o -print | sort)"
 chk "no files written into the tool folder" test "$BEFORE" == "$AFTER"
