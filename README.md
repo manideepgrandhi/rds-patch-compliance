@@ -1,432 +1,100 @@
-# rds_patch_compliance_report.sh
+# rds-patch-compliance
 
-Release history: [What's new](https://manideepgrandhi.github.io/rds-patch-compliance/) · also in [CHANGELOG.md](CHANGELOG.md).
+`rds_patch_compliance_report.sh` (v1.8.0) is a **read-only** patch compliance report for AWS databases. For every Aurora cluster, RDS instance, Multi-AZ DB cluster, DocumentDB cluster and Neptune cluster it shows how many **minor versions** the database is behind, and marks it **COMPLIANT** or **NON-COMPLIANT**. Versions behind are the valid minor upgrade targets RDS returns for the current version. It also flags majors past (or near) the end of standard support, auto minor upgrade switched off, pending maintenance and deprecated versions. It works across several accounts and regions. Output formats are text, CSV, JSON and a single-file HTML report.
 
-A **read-only** patch compliance report for AWS databases. For every Aurora cluster, RDS instance, Multi-AZ DB cluster, DocumentDB cluster and Neptune cluster it shows how many **minor versions** the database is behind, and marks it **COMPLIANT** or **NON-COMPLIANT**. Versions behind are the **valid minor upgrade targets RDS returns for the current version** (v1.1.0). It also flags majors past (or near) the end of standard support (Extended Support charges), auto minor upgrade switched off, pending maintenance and deprecated versions. It works across several accounts (profiles) and regions. Output formats are text, CSV, JSON and a single-file HTML report.
+A second script, `rds_patch_compliance_summary.sh`, shows only the high-level picture and the NON-COMPLIANT servers. Both scripts read the same settings file.
 
-```
-./rds_patch_compliance_report.sh -P prod,nonprod -r us-east-1,ap-south-1 -F csv,html,txt -o ~/compliance
-```
-
-**Settings live in one file.** `rds_patch_compliance_report.conf` (next to the scripts) holds every value, each with a short comment (what it does, allowed values, an example). It is loaded automatically by both scripts; just run `./rds_patch_compliance_report.sh`. A command line option overrides one value for that run. See [Configuration file](#configuration-file).
-
-For a walk-through of what happens when you run the script, a flow diagram, and the use of every file and function, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
-
-## Get it (AWS CloudShell)
-
-**Option 1 - git clone** (update later with `git pull --ff-only`):
-
-```
-git clone https://github.com/manideepgrandhi/rds-patch-compliance.git ~/rds-patch-compliance
-cd ~/rds-patch-compliance && ./rds_patch_compliance_report.sh --version
-```
-
-**Option 2 - release zip** (no git needed; re-run to update):
-
-```
-cd ~ && curl -fsSLO https://github.com/manideepgrandhi/rds-patch-compliance/releases/latest/download/rds-patch-compliance.zip && curl -fsSLO https://github.com/manideepgrandhi/rds-patch-compliance/releases/latest/download/rds-patch-compliance.zip.sha256
-sha256sum -c rds-patch-compliance.zip.sha256 && unzip -oq rds-patch-compliance.zip && cd ~/rds-patch-compliance && ./rds_patch_compliance_report.sh --version
-```
-
-`sha256sum -c` must print `rds-patch-compliance.zip: OK`. If it reports `FAILED`, the `&&` chain stops before `unzip`; delete the zip and do not run it. Releases from v1.4.1 on publish `rds-patch-compliance.zip.sha256` next to the zip.
-
-The zip is slim (v1.3.2): one top-level folder `rds-patch-compliance/` with only the runtime files - both `.sh` scripts (execute bits kept), `lib/`, `README.md`, `EXAMPLES.md` and `rds_patch_compliance_report.conf` (the settings file; the scripts need it next to them). No `docs/`, `samples/` or `tests/` (they are not needed to run; clone the repo if you want them). GitHub's "Source code" archives are slim too (`.gitattributes` export-ignore). Releases: <https://github.com/manideepgrandhi/rds-patch-compliance/releases>. Needs bash, jq and the AWS CLI (all present in CloudShell).
-
-* **Engines and what is judged:**
-  * Aurora clusters: `aurora-postgresql`, `aurora-mysql`. Judged **per cluster**; members are listed.
-  * Multi-AZ DB clusters (RDS PostgreSQL / MySQL with readable standbys): per cluster.
-  * DocumentDB and Neptune clusters: per cluster.
-  * Standalone RDS instances: `postgres`, `mysql`, `mariadb`, `sqlserver-ee/se/ex/web`, `oracle-ee/se2/ee-cdb/se2-cdb`. Judged **per instance** (read replicas are their own rows).
-  * Instances that belong to a cluster are not separate rows. Other engines (e.g. RDS Custom, Db2) are ignored.
-* **Strictly read-only.** Calls: `sts get-caller-identity`, `ec2 describe-regions` (only for `--all-regions`), the `--all-regions` discovery probe (`rds describe-db-instances` / `describe-db-clusters --max-records 20 --query length(...) --no-paginate`), `rds describe-db-clusters`, `rds describe-db-instances`, `rds describe-pending-maintenance-actions`, `rds|docdb|neptune describe-db-engine-versions --engine E --engine-version V` and `rds describe-db-major-engine-versions`, and (v1.4.0, once per account, only when Aurora clusters are found) `rds describe-global-clusters`. No upgrade or modify command is generated or run.
-* **Requirements:** Bash 4.4+, AWS CLI v2 (2.15+ recommended, for `describe-db-major-engine-versions`), jq 1.6+. Keep `lib/compliance.jq` next to the script. curl and mail/mailx/sendmail only for the optional alerts.
-* **Siblings:** [RDS_Pending_Maintenance](https://github.com/manideepgrandhi/DBA/tree/main/AWS/RDS_Pending_Maintenance) shows *what maintenance is pending and when*; [RDS_Patch_Runner](https://github.com/manideepgrandhi/DBA/tree/main/AWS/RDS_Patch_Runner) *applies* it to one cluster safely. This tool answers *how far behind are we on minor versions*.
+**Settings live in one file.** [`rds_patch_compliance_report.conf`](rds_patch_compliance_report.conf) (next to the scripts) holds every value, each with a short comment. It is loaded automatically; just run `./rds_patch_compliance_report.sh`. A command line option overrides one value for that run. See [The settings file](REFERENCE.md#the-settings-file).
 
 ![HTML report, Patch compliance tab: status and risk cards, filters, engine compliance table](docs/sample_report_html.png)
 
-![HTML report, Pending maintenance tab: one row per action, soonest first, red / amber dates](docs/sample_report_pending.png)
+Sample outputs (fake accounts `111111111111` and `222222222222`) are in [samples/](samples/).
 
-## Summary script (managers / teams)
+## Requirements
 
-`rds_patch_compliance_summary.sh` is a separate, read-only script that shows **only the high-level picture and the NON-COMPLIANT servers**. It reads the **same** `rds_patch_compliance_report.conf` as the full report (accounts, regions, rule, formats, e-mail and webhook settings; its files are named `<prefix>_summary_...`), and options override it. It runs the full report (`rds_patch_compliance_report.sh -F json`, with a temporary copy of the conf that switches off files and alerts) for the scan, so the counting is identical: valid RDS minor upgrade targets only, same major line, Oracle same patch line, deprecated versions as UNKNOWN (`lib/compliance.jq` + `lib/versions.jq`); `lib/summary.jq` only renders.
+- Bash 4.4+, jq 1.6+ and AWS CLI v2 (2.15+ recommended). All are present in CloudShell. Git Bash with `jq.exe` also works for merging offline.
+- Read-only IAM permissions: `rds:DescribeDBClusters`, `rds:DescribeDBInstances`, `rds:DescribePendingMaintenanceActions`, `rds:DescribeDBEngineVersions`, `rds:DescribeDBMajorEngineVersions`, `rds:DescribeGlobalClusters`, `ec2:DescribeRegions`, and optionally `iam:ListAccountAliases` (account name). `sts:GetCallerIdentity` needs no permission. See [Permissions](REFERENCE.md#permissions-read-only).
+
+## Quick start (CloudShell)
+
+```bash
+cd ~ && curl -fsSLO https://github.com/manideepgrandhi/rds-patch-compliance/releases/latest/download/rds-patch-compliance.zip && curl -fsSLO https://github.com/manideepgrandhi/rds-patch-compliance/releases/latest/download/rds-patch-compliance.zip.sha256
+sha256sum -c rds-patch-compliance.zip.sha256 && unzip -oq rds-patch-compliance.zip && cd ~/rds-patch-compliance   # must print "OK"
+vi rds_patch_compliance_report.conf          # profiles, regions, alert_emails ...
+./rds_patch_compliance_report.sh             # csv, html and txt into ./reports
+```
+
+`sha256sum -c` must print `rds-patch-compliance.zip: OK`. If it reports `FAILED`, the `&&` chain stops before `unzip`; delete the zip and do not run it.
+
+A quick look on the screen: `./rds_patch_compliance_report.sh -r us-east-1 -F text -o '' -l ''`. More commands with sample output: [EXAMPLES.md](EXAMPLES.md).
+
+You can also clone the repo: `git clone https://github.com/manideepgrandhi/rds-patch-compliance.git ~/rds-patch-compliance` and update later with `git pull --ff-only`.
+
+## What the statuses mean
+
+| Status | Meaning |
+|---|---|
+| **COMPLIANT** | The server has 0, 1 or 2 valid minor upgrade targets left (`<= --max-behind`, default 2). |
+| **NON-COMPLIANT** | It has 3 or more valid minor targets. |
+| **UNKNOWN** | The version lookup failed, or RDS no longer returns the current version (deprecated or not offered in that region). |
+
+The count uses only `ValidUpgradeTarget` entries with `IsMajorVersionUpgrade=false` in the server's own region. Oracle targets also have to be on the same patch line, unless you turn that off. Details: [The compliance rule](REFERENCE.md#the-compliance-rule) and [Oracle versions](REFERENCE.md#oracle-versions-patch-lines).
+
+Other flags (end of standard support, auto minor upgrade off, pending maintenance) are shown but do not change the status. See [Other flags](REFERENCE.md#other-flags).
+
+**Engines:** Aurora PostgreSQL / MySQL and Multi-AZ, DocumentDB and Neptune clusters are judged per cluster. Standalone RDS (PostgreSQL, MySQL, MariaDB, SQL Server, Oracle) is judged per instance. Cluster members are not separate rows. Other engines (for example RDS Custom, Db2) are ignored. The full list is in [Engines](REFERENCE.md#engines-and-what-is-judged).
+
+## The two scripts
+
+- **Full report** (`rds_patch_compliance_report.sh`): every server, every format, the HTML report with a Patch compliance tab and a Pending maintenance tab.
+- **Summary** (`rds_patch_compliance_summary.sh`): the totals, the per-region and per-engine picture, and only the NON-COMPLIANT (and UNKNOWN) servers. It uses the same conf and the same counting.
 
 ```bash
 ./rds_patch_compliance_summary.sh -P prod,nonprod -r us-east-1,ap-south-1              # txt to the screen
-./rds_patch_compliance_summary.sh -P prod --all-regions -F txt,html,csv -o ~/compliance  # files (+ txt on screen)
-./rds_patch_compliance_summary.sh -P prod --all-regions --save-data -o ~/compliance       # + rds_patch_<ACCOUNTID>_<YYYYMMDD>.json (v1.3.0)
-./rds_patch_compliance_summary.sh --merge ~/compliance -F txt,html,csv -o ~/combined      # offline merge, 0 AWS calls (v1.3.0)
+./rds_patch_compliance_summary.sh -P prod --all-regions -F txt,html,csv -o ~/compliance
 ```
 
-Options: `-P` (repeatable), `-r` / `--all-regions` (with `--no-discover`, `--probe-parallel N`, see [Regions](#regions-discovery-and-region-wise-breakdown-v120)), `-e`, `-i`, `--max-behind N` (default 2: NON-COMPLIANT when versions_behind > 2, i.e. 3 or more), `--warn-days`, `--oracle-any-patch-line`, `--exceptions FILE` (v1.6.0, passed through to the full report), `-F txt,html,csv` (default from the conf; `-o ''` prints one format on the screen; several formats need `-o`), `-o`, `--prefix`, `--fail-on-noncompliant` (exit 5), `--alert-email`, `--alert-webhook`, `--alert-webhook-format slack|json`, `--alert-on noncompliant|always`, `--alert-from`, `--attach-html yes|no`, `--attach-csv yes|no`, `--attach-prefix NAME`, `--mail-timeout SEC`, `--config FILE`, `-v`. `json` in the conf's `formats` is skipped for the summary.
+To cover several accounts: run with `--save-data` in CloudShell in each account, download the JSON files, then merge them offline (`--merge`, zero AWS calls). The same files work with either script. Walk-through with sample output: [EXAMPLES.md](EXAMPLES.md#summary-only-several-accounts-save-in-cloudshell-merge-in-git-bash-summary-v130). The merge rules are in [Several accounts](REFERENCE.md#several-accounts).
 
-Output: header (run time UTC + IST, accounts / regions, the `Regions  : N checked, M with databases, K empty, E errors` count line - no region name lists, the rule), overall totals and % compliant, a **per-region** table (regions with databases or an AWS error, plus an All-regions row), per engine the major-version breakdown with compliant / non-compliant / unknown and % plus the latest minor per major (Oracle per patch line), key flags as counts (past standard support, support ending within N days, auto minor upgrade off, pending maintenance), then the **NON-COMPLIANT servers** (`!!` lines in txt, red table in HTML; account, region, engine, identifier, current -> latest minor, behind, support flag; most behind first, then name) or `*** All servers compliant ***`, and the UNKNOWN servers with the reason. Compliant servers are not listed. CSV: `<prefix>_<UTC stamp>_noncompliant.csv` (non-compliant rows only) + `<prefix>_<UTC stamp>_summary.csv` (overall, engine, major and flag rows) + `<prefix>_<UTC stamp>_regions.csv` (one row per account + region with databases or an AWS error, plus `ALL`; empty regions are only counted). Exit codes: 0, 1 usage (including a missing conf setting), 2 pre-check / scan failed, 3 bad `--merge` input, 4 output, 5 non-compliant with `--fail-on-noncompliant`.
+## Most-used settings
 
-**Save and merge (summary 1.3.0).** `--save-data [FILE.json]` writes the same raw data file as the full report (default `rds_patch_<ACCOUNTID>_<YYYYMMDD>.json` in the `-o` directory), so files from either script are interchangeable. `--merge FILE|DIR...` (formats from the conf unless `-F` is given; the conf's profiles / regions / engines / identifiers are ignored) builds one summary from such files with jq only (0 AWS calls, Git Bash safe: CRLF `jq.exe`, `C:\...` paths, spaces): the newest `collected_at` wins per account, days to end of support / maintenance are recomputed at merge time, a bad or missing input exits 3. `--max-behind`, `--warn-days`, `--oracle-any-patch-line` (patch-line counting is redone from the saved targets), `--exceptions FILE` (v1.6.0), `--fail-on-noncompliant` and the alert options work with `--merge`; `-P/-r/-A/--no-discover/--probe-parallel/-e/-i/--save-data` are rejected. Merged output adds `Merged   : N file(s), offline` in the header (no region names), a **PER ACCOUNT** table (collected time, regions with databases, totals, %), and a **MERGED INPUTS** list (file, collected, accounts, used / superseded). All summaries now also write `<prefix>_<UTC stamp>_accounts.csv`; single-account file names carry the account number.
+Every setting is in [rds_patch_compliance_report.conf](rds_patch_compliance_report.conf) (next to the scripts). Any of them can be overridden for one run with a command-line option, for example `--max-behind 1` or `-r us-east-1`.
 
-Samples: [merged summary txt](samples/sample_summary_merged.txt), [merged summary html](samples/sample_summary_merged.html), [txt](samples/sample_summary.txt), [html](samples/sample_summary.html), [regions csv](samples/sample_summary_regions.csv). Tests: `tests/run_summary_tests.sh` (211 checks; mock AWS; boundaries 2/3, `--max-behind`, all-compliant, unknown, Oracle, multi-profile, numbers equal to the full report, alerts, shellcheck); `tests/validate_cli.sh` also runs it through the real AWS CLI against the local fake endpoint.
-
-![Summary HTML](samples/sample_summary.png)
-
-## Several accounts: collect in CloudShell, merge in Git Bash (v1.3.0)
-
-Run the report in **CloudShell of each account** and save the raw data with `--save-data`. Then download the JSON files and merge them **offline** on a laptop with Git Bash, WSL, macOS or Linux. The merge needs only bash and jq, and makes **zero AWS calls**.
-
-```
-# 1) CloudShell, in each account (read-only: describe calls + sts get-caller-identity)
-cd ~/rds-patch-compliance && git pull --ff-only
-./rds_patch_compliance_report.sh -A -F html -o ~/compliance --save-data
-#   -> ~/compliance/rds_patch_compliance_<ACCOUNTID>_<YYYYmmdd_HHMMSS>.html
-#   -> ~/compliance/rds_patch_<ACCOUNTID>_<YYYYMMDD>.json          (download this one)
-./rds_patch_compliance_report.sh -r us-east-1 --save-data ~/prod_patch.json   # or name the file
-
-# 2) Git Bash on Windows: put the downloaded files in one folder, then
-cd ~/rds-patch-compliance
-./rds_patch_compliance_report.sh --merge "C:\Users\me\Downloads\patch data" -o combined.html
-./rds_patch_compliance_report.sh --merge prod.json nonprod.json dev.json -o combined.html -F html,csv
-```
-
-* `--save-data [FILE.json]` writes the raw data next to the normal output. Default name: `rds_patch_<ACCOUNTID>_<YYYYMMDD>.json` in `-o DIR` (or the current folder), one file per account. With `FILE.json`, all accounts of that run go into one file. `-P`, `-r`/`-A` and `-o` work as before.
-* `--merge FILE|DIR...` reads files and folders. A folder means every `*.json` in it that is a `--save-data` file; other JSON files are skipped with a log line. Windows paths (`C:\...`), `/c/...` paths and paths with spaces work. CRLF output from `jq.exe` is handled.
-* The same account in two files: the newer `collected_at` wins, and the log names the file it ignored.
-* Days (support end, next maintenance) are recomputed at merge time. The status is recomputed with `--max-behind` if given (default: the largest value in the files).
-* A bad input (missing file, broken JSON, an HTML report, a `-F json` report, another schema, a newer data version) stops with a clear message and **exit 3**.
-* `-o combined.html` names the file (other formats get the same base name). Without `-F`, merge writes html. `-P`, `-r`, `-A`, `-e`, `-i`, `--dry-run`, `--save-data` and `--alert-test` are refused with `--merge`.
-
-**Account number everywhere.** Single-account runs put the account number in the default html / csv / txt / json names (`rds_patch_compliance_111111111111_20261015_093000.html`). Every report has a **Per account** table, and the account is shown in the header, the per-region table and every row.
-
-**Merged report.** It has the totals, a **Per account** table, a **Per region** table by account and region with an **All regions** total, and a **Merged inputs** note listing each file (collected time, accounts, used or superseded). The header shows region **counts** only, never names, and empty regions get no row.
-
-**Filters (every HTML report).** There are dropdowns for account (number and name), region, engine and status, plus a DB-name search. The cards, **Per account** and **Per region** tables recompute for the filtered servers. **Export CSV** saves the filtered rows: RFC 4180 quoting, UTF-8 BOM, and cells starting with `= + - @` are prefixed with `'` so Excel does not run them as formulas. With `--non-compliant-only`, only the shown rows are in the page.
-
-![Merged HTML report: 3 accounts, filters, per account and per region tables](docs/sample_merged_html.png)
-
-Sample: [samples/sample_merged.html](samples/sample_merged.html) (test mock: accounts 111111111111, 222222222222, 333333333333).
-
-## Regions: discovery and region-wise breakdown (v1.2.0, v1.2.1)
-
-**Discovery (`-A` / `--all-regions`).** Most accounts have databases in a few of their ~17 enabled regions. Instead of the full scan (clusters, instances, pending maintenance, version lookups) everywhere, each enabled region is first **probed** with two read-only one-page calls:
-
-```
-aws rds describe-db-instances --max-records 20 --query 'length(DBInstances)' --no-paginate --region R
-aws rds describe-db-clusters  --max-records 20 --query 'length(DBClusters)'  --no-paginate --region R
-```
-
-* Probes run in parallel, `--probe-parallel N` at a time (default 8, 1-32; config `probe_parallel`). Each probe is one request (no pagination), so a region with 500 instances costs the same as an empty one; the probe count is capped at 20.
-* Only regions where a probe found a DB instance or cluster are scanned in full. A cluster-only region (e.g. a headless Aurora global secondary) counts as having databases.
-* **A probe that fails (AccessDenied, SCP deny, throttling, timeout) is an error, never "empty":** it is listed under ERRORS and the region is still scanned in full, so nothing is silently skipped.
-* `--no-discover` (config `discover = no`) scans every enabled region in full, as before v1.2.0. Regions given with `-r` (or the profile default) are always scanned directly, with no probe.
-* `--dry-run` shows the probe commands and the full-scan commands; probes are counted in `aws_calls` (JSON `meta`, log `Result:` line).
-
-**Header.** Text, HTML and the summary show only a count line; no region names are listed at the top (v1.2.1). Region names appear in the header only with `-r` (the regions you named); with `-A` the text header says `Regions: all enabled`. Empty regions (no DB instance or cluster) are only counted - they are not listed anywhere in text, HTML or CSV (JSON keeps them, see below):
-
-```
-Accounts : 111111111111 (prod)   Regions: all enabled
-Regions  : 14 checked, 2 with databases, 11 empty, 1 error (discovery probe, 8 in parallel; full scan only where databases or a probe error)
-```
-
-HTML header: `... accounts 111111111111 (prod) · Regions: 14 checked, 2 with databases, 11 empty, 1 error`.
-
-**Region-wise breakdown.** One row per account + region **with databases or an AWS error** (status `databases` / `error`, total, compliant, non-compliant, unknown, % compliant, servers with pending maintenance, past standard support), then an **All regions** row. Order: regions with databases, then errors; within that most servers first. Empty regions get no row (v1.2.1). Everywhere:
-
-* text: `PER REGION` section after `PER ENGINE / MAJOR VERSION`; summary txt: `PER REGION` table (same rows).
-* HTML: a sortable, colour-coded table (% compliant bar: green >= 90 %, amber >= 70 %, red below), section `#regions`, linked from the header; a "Regions" summary card.
-* CSV: an extra file `<prefix>_<stamp>_regions.csv` (`account_id, profile, region, status, total, compliant, non_compliant, unknown, pct_compliant, servers_with_pending_maintenance, pending_actions, past_standard_support, aws_errors, probe_instances_max20, probe_clusters_max20`).
-* JSON keeps the full data, including empty regions: `summary.regions[]` (also `status: "empty"` rows), `summary.regions_total`, `summary.region_overview` (`mode`, `probe_parallel`, `checked`, `with_databases`, `empty`, `error`, `empty_regions`); `meta.region_status`, `meta.region_discovery`.
-
-```
-PER REGION (account x region with databases or an AWS error; empty regions only counted above; pending = servers with pending maintenance)
-  ACCOUNT       REGION          STATUS      TOTAL  COMPL  NON-C  UNKN  %COMPL  PEND  PAST-STD
-  111111111111  us-east-1       databases      19     11      7     1   57.9%     3         2
-  111111111111  us-west-2       databases       1      1      0     0    100%     0         0
-  111111111111  ca-central-1    error           0      0      0     0       -     0         0  see ERRORS (no data)
-  ALL           All regions                    20     12      7     1     60%     3         2
-```
-
-## The compliance rule
-
-For **each server** the report asks RDS which upgrades are valid **from its current version**:
-
-```
-aws rds describe-db-engine-versions --engine <engine> --engine-version <current> --region <region>
-```
-
-(`aws docdb ...` / `aws neptune ...` for those engines; they support the same call and return the same `ValidUpgradeTarget` list.) Only that version's `ValidUpgradeTarget[]` entries with **`IsMajorVersionUpgrade == false`** and the same `Engine` are used:
-
-* `newer_versions` = those targets, sorted; `latest_minor_version` = the highest; **`versions_behind` = their count**.
-* `default_auto_upgrade_target` = the target RDS marks `AutoUpgrade=true` (the version auto minor upgrade would move to), if any.
-* Major targets are never counted or suggested (`major_upgrade_targets` in JSON only shows how many exist).
-* Nothing is derived from the full engine version list any more (v1.1.0). Lookups are cached per engine + version + region.
-
-| versions_behind | status |
-|---|---|
-| 0, 1 or 2 (`<= --max-behind`, default 2) | **COMPLIANT** |
-| 3 or more | **NON-COMPLIANT** |
-| lookup failed, or the current version is **not returned** by `describe-db-engine-versions` | **UNKNOWN** |
-
-Not returned = deprecated or not offered in that region: `deprecated_version=true`, no targets, note `current version not returned by describe-db-engine-versions`. There is no fallback to another method.
-
-**Worked example** (Aurora PostgreSQL 15.8; the engine offers `15.4 ... 15.8 15.10 15.12 15.13`, but RDS returns as valid targets from 15.8 only `15.10`, `15.12` (minor, AutoUpgrade on 15.12) and `16.4`, `16.8` (major)):
-
-| | v1.0.0 (full engine list) | v1.1.0 (ValidUpgradeTarget of 15.8) |
+| Setting | Shipped | Meaning |
 |---|---|---|
-| newer_versions | 15.10, 15.12, 15.13 | 15.10, 15.12 |
-| latest_minor_version | 15.13 | 15.12 (default auto-upgrade target 15.12) |
-| versions_behind | 3 → NON-COMPLIANT | **2 → COMPLIANT** |
+| `profiles` | empty | AWS CLI profile(s), one per account. Empty = the current login |
+| `all_regions` / `regions` | `yes` / empty | Scan every enabled region (probed first), or only `regions` |
+| `max_behind` | `2` | NON-COMPLIANT when the server is more than this many valid minor targets behind |
+| `warn_days` | `180` | "Support ends soon" window, in days |
+| `formats` / `output_dir` | `csv,html,txt` / `./reports` | Report formats and where they go |
+| `alert_emails` | empty | Who gets an e-mail summary. Empty = no e-mail |
+| `attach_html` / `attach_csv` | `yes` / `yes` | Attach the HTML report and the per-server CSV (sendmail) |
+| `attach_prefix` | `patch_compliance` | Short attachment names: `NAME_YYYY-MM-DD.html` / `.csv` |
+| `alert_on` | `noncompliant` | `noncompliant` = send only when a server is NON-COMPLIANT or an AWS call failed; `always` = every run |
 
-Boundary: 2 valid minor targets = COMPLIANT, 3 = NON-COMPLIANT (e.g. 14.12 with targets 14.13, 14.15, 14.17).
+All settings, with allowed values: [The settings file](REFERENCE.md#the-settings-file), or the comments in the conf itself.
 
-**Latest minor per major** (summary) = the highest valid minor target seen among that major's servers, or the current version when a server is up to date.
+## Exit codes
 
-### Why v1.0.0 (full engine list) could differ from RDS's own upgrade metadata
-
-* **Not a valid target from this version:** a release can be listed for the engine but not be an allowed upgrade *from* your version (upgrade paths are per source version; some need an intermediate hop, some newer patch levels are not yet enabled from older ones).
-* **Status / lifecycle:** the full list contains versions with other statuses or limited availability (preview, deprecated-but-still-listed, versions only for new creates, Babelfish / limitless / serverless-only builds) that are not upgrade targets.
-* **Regional availability:** a version can exist in AWS's catalogue but not (yet) be a target in your region; the per-version call is made in the server's region.
-* **Release numbering:** "versions behind" by number gaps vs real releases (15.9 / 15.11 never shipped on Aurora) and odd naming such as Aurora MySQL `8.0.mysql_aurora.3.05.2` (Aurora release, not the MySQL patch level), SQL Server `15.00.4410.1.v1`, Oracle RU strings; deriving the major line from such strings can group wrongly.
-* **Deprecated current version:** v1.0.0 still counted newer versions for a version AWS no longer returns; v1.1.0 shows UNKNOWN instead.
-* **Major targets:** a target list can contain major upgrades (e.g. 15.8 → 16.x); only `IsMajorVersionUpgrade=false` entries are counted.
-
-## Oracle versions (patch lines)
-
-RDS for Oracle version strings look like `<major>.0.0.0.ru-<YYYY-MM>[.<line>-<YYYY-MM or N>].r<N>`:
-
-| Example | Patch line |
+| Code | Meaning |
 |---|---|
-| `19.0.0.0.ru-2026-04.r1` | plain RU (Release Update only) |
-| `19.0.0.0.ru-2026-01.rur-2026-04.r1` | `rur` - Release Update Revision |
-| `19.0.0.0.ru-2026-07.mrp-2026-07.r1` | `mrp` - Monthly Recommended Patches on top of the RU |
-| `19.0.0.0.ru-2026-07.spb-2026-07.r1` | `spb` - Spatial Patch Bundle |
+| 0 | Report produced (also when servers are non-compliant) |
+| 1 | Usage or a missing conf setting |
+| 2 | Pre-check failed (aws, jq or credentials) |
+| 3 | Bad `--merge` input |
+| 4 | Output error |
+| 5 | NON-COMPLIANT found, with `--fail-on-noncompliant` |
+| 130 | Interrupted |
 
-**Rule (default):** an Oracle upgrade target counts only when it has the **same major** (19 -> 19) **and the same patch line** as the current version (mrp -> mrp, rur -> rur, plain RU -> plain RU, spb -> spb). That matches what the RDS console Modify page offers. Within one line, versions are ordered numerically by RU date, then line date / number, then revision (`r2 > r1`, `r10 > r9`); a newer RU on the same line (for example `ru-2026-10.mrp-2026-10.r1` after `ru-2026-07.mrp-2026-07.r10`) counts. The current version and older builds are never counted. Targets on another line are left out and listed in the note, for example `excluded 19.0.0.0.ru-2026-07.spb-2026-07.r1 (different patch line spb; current is mrp)`.
+A region that was denied, or a failed discovery probe, is listed under ERRORS in the report and does not change the exit code.
 
-Example (a real case): current `19.0.0.0.ru-2026-07.mrp-2026-07.r1`, RDS lists `...spb-2026-07.r1` and `...mrp-2026-07.r2`. Before 1.1.1 the report picked `spb` as "latest" (letters compared as text, spb > mrp). Now: latest minor `19.0.0.0.ru-2026-07.mrp-2026-07.r2`, 1 behind, COMPLIANT, spb excluded with a note.
+## More docs
 
-In the summary table the Oracle "latest minor" is shown per patch line. Sample: [samples/oracle_patch_lines.txt](samples/oracle_patch_lines.txt) (mock scenario `oracle`).
+- [REFERENCE.md](REFERENCE.md): the full reference. Engines, the rule, Oracle patch lines, the report, exceptions, options, IAM, alerts, the settings file, tests and version notes.
+- [EXAMPLES.md](EXAMPLES.md): usage examples with sample output.
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): what happens when you run the scripts, a flow diagram, and the use of every file and function.
+- [CHANGELOG.md](CHANGELOG.md): what changed in each release. Also on the [What's new](https://manideepgrandhi.github.io/rds-patch-compliance/) page.
+- [compliance_exceptions.conf.example](compliance_exceptions.conf.example): template for marking approved exceptions (see [Compliance exceptions](REFERENCE.md#compliance-exceptions-v160)).
+- [samples/](samples/): checked-in example reports from the test mock.
 
-`--oracle-any-patch-line` (config `oracle_any_patch_line = yes`) restores counting across patch lines (default off). An Oracle version string in an unknown format falls back to the generic compare, and a line is written with `-v`.
-
-**Same-major safety net (every engine):** a target counts only if it is in the current major line, even when AWS lists it with `IsMajorVersionUpgrade=false`: Oracle / SQL Server first part (19, 15 vs 16), PostgreSQL first part (two parts before 10), MySQL / MariaDB first two parts (8.0 vs 8.4), Aurora MySQL the Aurora major (2 vs 3), DocumentDB / Neptune first two parts. Excluded targets are noted (`excluded 16.00.4185.3.v1 (different major version 16; current is 15)`).
-
-## Other flags (shown; they do not change the status)
-
-* **End of standard support / Extended Support** from `rds describe-db-major-engine-versions` (`SupportedEngineLifecycles`: `open-source-rds-standard-support`, `open-source-rds-extended-support`). `support_flag`:
-  * `past standard support (Extended Support charges)` - standard support has ended;
-  * `standard support ends in <N> days` - within `--warn-days` (default 180);
-  * `ok`;
-  * `unknown (...)` - AWS lists no dates for that major (e.g. SQL Server, Oracle), the call failed / was denied, or the CLI is too old (logged once, the report still runs);
-  * `n/a (no lifecycle API for docdb|neptune)`.
-* **Auto minor upgrade:** `true`, `false`, or `mixed` (some cluster members off). For Aurora it is read from the member instances, for Multi-AZ DB clusters from the cluster.
-* **Pending maintenance** (`pending_actions_count`, `pending_actions`): maintenance actions AWS has scheduled or offered for this server that haven't been applied yet (from `describe-pending-maintenance-actions`). Cluster rows include their member instances' actions, tagged with the member name. Format per action: `<action>[ on cluster | on member <instance>] (auto-apply <UTC date>, forced <UTC date>, opt-in: <status>) - <short description>`, actions separated by `; `; `(no date, optional)` when AWS gives no date. Example: `system-update on cluster (auto-apply 2026-11-01, forced 2026-12-01) - Upgrade to Aurora PostgreSQL 15.8.1 patch; os-upgrade on member orders-pg15-2 (opt-in: next-maintenance) - New Operating System update is available`. The HTML lists every action in the **Pending maintenance** tab (v1.7.0); the text report lists them in a PENDING MAINTENANCE section; JSON has the structured `pending_actions_detail`. The summary says e.g. `pending maintenance on 3 server(s): os-upgrade 2, system-update 2, db-upgrade 1`.
-* **Current version not returned / deprecated** (see above).
-
-## Report
-
-* **Header** (v1.3.1, text and HTML; merged reports too): title, run time UTC + IST, accounts with numbers, the region count line and a one-line rule. Longer explanations (counting source, region mode, pending maintenance, read-only note) are in `ABOUT THIS REPORT` at the end of the text and a collapsed **About this report** section at the bottom of the HTML.
-* **SUMMARY first** (text; HTML shows it as the Engine compliance table): totals with % compliant; per engine and major version: total / compliant / non-compliant / unknown, latest minor, support state; counts of Extended Support, support ending soon, auto minor upgrade off, pending maintenance, deprecated.
-* **Details:** one section per engine, sorted NON-COMPLIANT first, then UNKNOWN, COMPLIANT; within that most behind first, then name. Members of one Aurora global database stay together (primary first), in every output (v1.7.0).
-* **HTML (v1.7.0): two tabs.** Each piece of information is shown once, and nothing has to be expanded.
-  * **Patch compliance**: cards, filters, engine table, per account / per region tables and the server list. No maintenance columns; a server with actions shows a small **N pending** link that opens the second tab for that server.
-  * **Pending maintenance**: one row per action (cluster, member instance, instance or global database), soonest first, with auto-apply and forced dates in IST (red = overdue or within 7 days, amber = within 30 days) and the maintenance window in IST. Cards for due within 7 days, within 30 days and optional; an **Actions by type** strip (v1.7.1; click a count to filter); filters for account, region, engine, action (always lists system-update, db-upgrade, os-upgrade, hardware-maintenance and ca-certificate-rotation with counts, 0 greyed out, plus any other type found), applies to, due and Global / Standalone; search and Reset. The server name jumps back to its row in the first tab. Open the file with `#pending` at the end of the address to land on this tab.
-  * **Export CSV (both tabs, one layout):** one row per server, never one per action. Tab 1 saves the filtered servers; tab 2 saves each server that has a visible action once, in tab-2 order. 26 columns: `account_id, account_name, profile, region, resource_type, identifier, members, engine, major_version, current_version, latest_minor_version, versions_behind, newer_versions, compliance_status, auto_minor_upgrade, standard_support_end, extended_support_end, support_flag, deprecated_version, global_cluster, global_role, maint_window_ist, pending_count, next_due, next_action, pending_actions` (+ the 5 exception columns when exceptions are on). `next_due` = soonest date as `2026-11-28 (in 6 days)`; `next_action` = e.g. `os-upgrade on member orders-pg15-2`; `pending_actions` = every action soonest first, e.g. `system-update on cluster, auto-apply 2026-12-09 01:30 IST, forced 2027-01-08 01:30 IST - Upgrade to Aurora PostgreSQL 15.8.1 patch` (or `, next window YYYY-MM-DD` / `, optional (no date)`), joined by `; `. Both buttons open the same column picker (all ticked by default, remembered in the browser).
-  * The text report is split the same way: no `pending:` lines under each server, and a **PENDING MAINTENANCE** section near the end. The command-line CSV and JSON files are unchanged.
-* **HTML (v1.5.1):** the Global cluster dropdown is replaced by two checkboxes, **Global** (Aurora global database members only) and **Standalone** (Aurora clusters outside a global DB). They show only for All engines or an Aurora engine; Oracle, SQL Server and other non-Aurora servers never match; both or neither ticked = no restriction. The **Global databases** card shows `N mismatched` (members on different versions, or same version with different status) and ticks Global. The Global databases section is one collapsed line per global DB (status, account, `1 primary + 2 secondaries`, mismatch flag); expand it for the members. The row badge turns amber when its global DB is mismatched. **Search** matches identifier, cluster members, global DB name, account number and name, engine and current version (case-insensitive, trimmed, literal text), works with every filter, opens matching sections and shows **No servers match** with a Clear filters button.
-* **HTML (v1.5.0):** two card rows: status (Servers, Compliant, Non-compliant, Unknown) and risk (Extended Support, Support ending, Auto minor off, Pending, Not returned, Global databases, Regions). Every card is a button (click, or Tab + Enter / Space): it sets the matching filter (Status, the new **Flag** dropdown, or Global cluster = **All global databases**), the active card is highlighted, a second click clears it, Servers resets. Hovering or focusing Non-compliant / Unknown shows the count per engine. Under the cards an **Engine compliance** table (sortable, sticky header, scrolls inside the box): one row per engine, ▸ opens its majors (only majors with issues unless **Show all majors** is ticked); the counts are links that filter the page; a **Filtered** tag shows when filters are on. Server sections per engine are collapsed (`Expand all` / `Collapse all`, engine names link to them) and open by themselves while a filter is active. **Export CSV** opens a column picker (all ticked by default; the choice is kept in the browser's localStorage); columns keep the standard order.
-* **HTML (earlier):** single file, summary cards, filter box (any text), click a column header to sort, colour-coded status; dropdown filters for account, region, engine, status and **Global cluster** (each global database, `Not global`, and `Global: unknown` when the lookup failed).
-* `--non-compliant-only` shows only NON-COMPLIANT rows (the summary still counts everything).
-
-### Columns (CSV; the same fields are in JSON, HTML and text)
-
-These are the command-line `-F csv` columns (unchanged in v1.7.0). The HTML **Export CSV** buttons use the one-row-per-server layout described under [Report](#report).
-
-`account_id, profile, region, resource_type, identifier, members, engine, major_version, current_version, latest_minor_version, versions_behind, newer_versions, default_auto_upgrade_target, compliance_status, auto_minor_upgrade, standard_support_end, extended_support_end, support_flag, pending_actions_count, pending_actions, deprecated_version, maint_window_utc, maint_window_ist, next_maintenance, days_until_maintenance, global_cluster, global_role, account_name` (28 columns; `account_name` added at the end in v1.5.0)
-
-v1.4.0 removed the tag columns (Environment / Owner / Application), `arn`, `upgrade_command` (and the HTML Copy button) and `note` from every displayed output (HTML, CSV, text, summary script). They are still in the `-F json` rows and the `--save-data` file; merged outputs don't show them either. `-T` / `tag_columns` are accepted and ignored with a warning.
-
-* `resource_type`: `aurora-cluster`, `multi-az-cluster`, `docdb-cluster`, `neptune-cluster`, `instance`.
-* `members`: cluster member instances, writer marked, e.g. `orders-pg15-1 (writer), orders-pg15-2`.
-* `newer_versions`: the valid minor upgrade targets counted, space-separated in CSV. `default_auto_upgrade_target`: the `AutoUpgrade=true` target.
-* `pending_actions_count` / `pending_actions`: see "Pending maintenance" above.
-* `maint_window_ist`: the preferred maintenance window converted to IST (UTC+5:30), e.g. `sat:21:00-sat:21:30` → `sun:02:30-sun:03:00`.
-* `global_cluster` / `global_role`: the Aurora global database the cluster belongs to and its role (`primary` / `secondary`); empty for anything else; `unknown` role (empty cluster) when `describe-global-clusters` failed or the data file predates v1.4.0.
-
-### Account names (v1.5.0)
-
-Each account is shown as `name (number)` in the HTML (header, dropdown, tables), with the name in the text `Accounts :` line and a `NAME` column in PER ACCOUNT, and an `account_name` column at the end of CSV / JSON rows (searchable in the HTML search box). The name comes from, in order:
-
-1. the config file: `111111111111 = prod-payments` (12-digit key; quotes, trailing `# comment` and control characters stripped; max 64 characters);
-2. `aws iam list-account-aliases` (read-only, once per profile; needs `iam:ListAccountAliases`; failure or no alias is silent);
-3. nothing: the number only.
-
-Names are stored in `--save-data` files and carried through `--merge`; files from older versions merge with the number only.
-
-### Aurora global databases (v1.4.0)
-
-One read-only `rds describe-global-clusters` per account (global clusters are account-wide), only when an Aurora cluster was found. If it fails (for example AccessDenied) the run continues with a warning, it is not counted as an AWS error, and the Aurora rows show global `unknown`.
-
-* Each member cluster is still a normal row in its own region (badge `global <name> · primary|secondary`; headless secondaries marked).
-* **Global databases** section (HTML after Per region, text `GLOBAL DATABASES`): per global database the account, engine and overall status (worst member), then each member's role, region, cluster, version and status. Members in regions that weren't scanned show `NOT SCANNED`. **region status mismatch** is flagged when members run the same version but get different statuses (each region has its own list of valid targets).
-* Pending maintenance actions on the global cluster ARN are listed on the primary as `... on global <name>` and in the section.
-* Header / cards: `Global databases: N (M members)`. The summary script shows the same line and card and lists members of one global database together in its non-compliant list (`GLOBAL DB` column).
-* `--save-data` files carry `globals` and `global_lookup` (`schema_minor: 1`; `schema_version` stays 1, so older files still merge). When merging, accounts from older files show global `unknown`; members are grouped across regions within an account.
-
-### Output files
-
-With `-o DIR` each format is written to `DIR/<prefix>_[<ACCOUNTID>_]<YYYYmmdd_HHMMSS>.<csv|html|txt|json>` (box local time, mode 0640); `csv` also writes `<prefix>_<YYYYmmdd_HHMMSS>_regions.csv` (region breakdown). The log prints each absolute path. Without `-o` a single format goes to stdout. Samples: [samples/](samples/) (`sample_report.txt`, `.csv`, `_regions.csv`, `.html`, `.json`, made with the test mock: `MOCK_SCENARIO=discover`, `-P prod,nonprod -A`).
-
-**Downloading from CloudShell:** copy the full path from the `Wrote ...` log line, then **Actions > Download file** and paste it, e.g. `/home/cloudshell-user/compliance/rds_patch_compliance_20261015_093000.html`. For several files: `cd ~ && zip -r compliance.zip compliance` and download `/home/cloudshell-user/compliance.zip`.
-
-## Compliance exceptions (v1.6.0)
-
-Approved exceptions for servers you know are non-compliant (decommission planned, vendor-pinned version, and so on). They come from one shared file, `compliance_exceptions.conf`. rds-patch-compliance, rds-backup-compliance and rds-compliance-report all use the same file and format.
-
-```text
-# account_id | identifier | scope | expires | reason
-111111111111 | legacy-aurora-pg12 | patch        | 2026-12-31 | Decommission in December, CHG-1234
-111111111111 | reports-pg         | patch,backup | 2027-03-31 | Vendor-pinned version | INC-77
-```
-
-* **File:** `--exceptions FILE` (config `exceptions = FILE`). The default is `compliance_exceptions.conf` next to the script, if present. With no file the feature is off and the reports are exactly as before. Start from [compliance_exceptions.conf.example](compliance_exceptions.conf.example). The real file is in `.gitignore`.
-* **Format:** all five fields are required. account_id is 12 digits. The identifier is exact and case-insensitive, with no wildcards and no region. scope is `patch`, `backup` or `patch,backup`. expires is a mandatory `YYYY-MM-DD` (UTC) and is the last day the exception applies. `#` comments and blank lines are ignored.
-* **Validation:** strict. A missing field, a bad account, scope or date, or a duplicate account + identifier for the same scope stops the run (exit 1) with `file:line`.
-* **Matched, not expired:** a **NON-COMPLIANT** server is shown as **Compliant (exception)** and counted as compliant in every %. The evaluated status is kept in `actual_status`. An **UNKNOWN** server stays **UNKNOWN**; the exception is still listed against it (exception fields are filled in) but the status and counts do not change. Flags: **expiring soon** (`exception_warn_days` days or less, default 14) and **no longer needed** (the server is compliant anyway).
-* **Expired:** the server is evaluated normally and flagged **exception expired**. The log warns about expired entries and about entries that match no server.
-* **When applied:** only when the report is built. `--save-data` files never change.
-* **Outputs:**
-  * Summary: `COMPLIANT N (incl. X exceptions)`. The Compliant card pop-up shows Compliant, Non-compliant and "Exceptions expiring soon or no longer needed" (that line only when the count is above 0).
-  * HTML: an Exception column (reason, expiry, flag badge) and an **Exceptions** quick filter: all, exceptions only, non-exceptions, expiring soon or no longer needed, expired. The filter combines with the other filters, and the counts, tables and CSV export follow it.
-  * CSV / JSON: the CSV status column shows `COMPLIANT (EXCEPTION)`, and JSON keeps `COMPLIANT` with `"exception": "yes"`. Both get five fields at the end: `exception` (yes/no/expired), `exception_reason`, `exception_expires`, `exception_flag`, `actual_status`.
-  * Text: an EXCEPTIONS section.
-* `--fail-on-noncompliant` and `--non-compliant-only` treat an excepted NON-COMPLIANT server as compliant. UNKNOWN with an exception is still UNKNOWN.
-
-## Usage
-
-```
-# get the tools in CloudShell (once)
-git clone https://github.com/manideepgrandhi/rds-patch-compliance.git ~/rds-patch-compliance && cd ~/rds-patch-compliance
-
-./rds_patch_compliance_report.sh                                 # every setting from rds_patch_compliance_report.conf
-./rds_patch_compliance_report.sh -r us-east-1 -F text -o '' -l ''  # one region, text on the screen, no files
-./rds_patch_compliance_report.sh -r us-east-1,ap-south-1 -F html -o ~/compliance
-./rds_patch_compliance_report.sh -P prod,nonprod --all-regions -F csv,html,txt,json -o ~/compliance
-./rds_patch_compliance_report.sh -e 'aurora-*' -i 'prod-*' --non-compliant-only
-./rds_patch_compliance_report.sh --max-behind 1 --warn-days 365 --fail-on-noncompliant   # exit 5 if any NON-COMPLIANT
-./rds_patch_compliance_report.sh --config my.conf --dry-run      # another complete copy of the conf
-```
-
-More in [EXAMPLES.md](EXAMPLES.md), each with its sample output. `--help` lists every option and, in brackets, the value the conf currently has. Every default in this table is the value shipped in `rds_patch_compliance_report.conf`.
-
-| Option | Meaning |
-|---|---|
-| `-P, --profile` | profile(s) / accounts; repeatable or comma-separated |
-| `-r, --region` / `-A, --all-regions` | regions (default: the profile's region; no probe) / every enabled region, probed first |
-| `--no-discover` / `--probe-parallel N` | with `-A`: scan every region in full / probes at a time (default 8, 1-32) |
-| `-e, --engine GLOB` / `-i, --identifier GLOB` | filters (case-insensitive globs; a cluster also matches by member name) |
-| `--max-behind N` | threshold, default 2 |
-| `--warn-days N` | "support ends soon" window, default 180 |
-| `--non-compliant-only` | only NON-COMPLIANT rows |
-| `--fail-on-noncompliant` | exit 5 when any NON-COMPLIANT |
-| `-T, --tag-columns` | ignored since v1.4.0 (warning); tag columns are no longer shown |
-| `-F, --format` / `-o, --output-dir` / `--prefix` | `text,csv,json,html` (`txt` = text) / folder (`-o ''` = print one format on the screen) / file prefix |
-| `--top N` | deprecated in v1.3.1: accepted and ignored with a warning (the most-behind list was removed) |
-| `-l, --log-file` | append timestamped log lines (`-l ''` = no log file) |
-| `--alert-email`, `--alert-webhook`, `--alert-webhook-format slack|json`, `--alert-on noncompliant|always`, `--alert-from`, `--alert-test` | optional alerts, see [Alerts](#alerts-html-e-mail-slack-webhook) |
-| `--attach-html yes|no` / `--attach-csv yes|no` / `--attach-prefix NAME` / `--mail-timeout SEC` | e-mail attachments (sendmail only), their short name, and the mail command time limit |
-| `--save-data [FILE.json]` | also write the raw data for a later `--merge` (v1.3.0) |
-| `--merge FILE\|DIR...` | offline merge of `--save-data` files, 0 AWS calls; `-o combined.html` names the output (v1.3.0) |
-| `--exceptions FILE` | compliance exceptions (v1.6.0); default `compliance_exceptions.conf` next to the script, if present |
-| `--tz ZONE` | second time zone for the generated time (default: Asia/Kolkata) |
-| `--config FILE` | use this complete conf instead of the one next to the script; **parsed, never sourced**; CLI options override it; credentials are refused |
-| `--aws-timeout`, `--max-attempts`, `--keep-workdir`, `--dry-run`, `-v` | behaviour (`--dry-run` also prints the settings in effect) |
-
-### Exit codes
-
-`0` report produced (or merged) (also when servers are non-compliant), `5` NON-COMPLIANT found with `--fail-on-noncompliant`, `1` usage, `2` pre-check (aws/jq missing, no profile usable), `3` bad `--merge` input file, `4` output error, `130` interrupted. Partial AWS errors (a region denied, a failed discovery probe) are listed under ERRORS in the report; they do not change the exit code.
-
-## IAM policy (read-only)
-
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [{
-    "Sid": "RdsPatchComplianceReadOnly",
-    "Effect": "Allow",
-    "Action": [
-      "rds:DescribeDBClusters",
-      "rds:DescribeDBInstances",
-      "rds:DescribePendingMaintenanceActions",
-      "rds:DescribeDBEngineVersions",
-      "rds:DescribeDBMajorEngineVersions",
-      "rds:DescribeGlobalClusters",
-      "ec2:DescribeRegions",
-      "iam:ListAccountAliases"
-    ],
-    "Resource": "*"
-  }]
-}
-```
-
-`sts:GetCallerIdentity` needs no permission. DocumentDB and Neptune use the same `rds:` actions. Without `rds:DescribeDBMajorEngineVersions` the report still works; support dates show `unknown`. `rds:DescribeGlobalClusters` (v1.4.0) is used for Aurora global database membership; without it the report still works and membership shows as `unknown`. `iam:ListAccountAliases` (v1.5.0) is optional: without it accounts show the number only (or the config name). The AWS managed `ReadOnlyAccess` policy also covers these.
-
-## Alerts (HTML e-mail, Slack, webhook)
-
-Set `alert_emails` / `alert_webhooks` in the conf (or `--alert-email` / `--alert-webhook`). `alert_on = noncompliant` sends only when a server is NON-COMPLIANT or an AWS call failed; `always` sends every run.
-
-* **E-mail with `sendmail`** (checked first): an HTML message with a plain-text copy, and two short-named attachments, `patch_compliance_YYYY-MM-DD.html` (the full report) and `patch_compliance_YYYY-MM-DD.csv` (the per-server CSV). The regions CSV is never attached. Choose with `attach_html`, `attach_csv`, `attach_prefix` (or `--attach-html`, `--attach-csv`, `--attach-prefix`).
-* **E-mail with only `mail` / `mailx`**: the text summary alone, no HTML, no attachments.
-* **What the e-mail shows**: a status banner (NON-COMPLIANT / ERRORS / COMPLIANT), cards (Resources, Compliant, Non-compliant, Unknown, Pending), the rule, then a table of the NON-COMPLIANT servers, one of the UNKNOWN servers, and one of AWS errors (regions that may be incomplete). Columns: Account, Server (with region), Engine, Current to target, Reason. Pending maintenance is only a count (details are in the HTML report). Report file paths are not in the e-mail; they print on the screen.
-* The mail command is stopped after `mail_timeout` seconds (default 60).
-* **Slack / generic webhook** payloads are unchanged: the full text report, cut at `slack_max_chars`.
-
-![Alert e-mail, NON-COMPLIANT run: banner, cards, and the failures tables](docs/sample_alert_email.png)
-
-Samples: [html](samples/sample_alert_email.html), [text](samples/sample_alert_email.txt).
-
-## Configuration file
-
-`rds_patch_compliance_report.conf` sits next to the scripts (it ships in the release zip) and is the one place for every setting; **both** scripts read it. Format: `key = value`, `## ` notes, lists comma-separated, yes / no for switches. The file is parsed line by line, never sourced; unknown keys and credential keys are errors. A short note above each key says what it does, the allowed values and an example.
-
-* **Automatic.** No flag needed. The startup output says which file was used: `Settings: /path/rds_patch_compliance_report.conf (loaded automatically from the script folder)`.
-* **Complete.** The scripts have no built-in values, so every key must be present. A missing one stops the run, before any AWS call, and names it: `missing required setting(s): max_behind`. An empty value is allowed where the note says what empty means.
-* **`--config FILE`** runs with another complete copy (`cp rds_patch_compliance_report.conf my.conf`) instead. It replaces the conf next to the script; it does not merge with it.
-* **Command line wins** for one value at a time: `--max-behind 3`, `-r us-east-1` (switches off `all_regions`), `-A` (clears `regions`), `-o ''`.
-* **Sections**: accounts and regions (`profiles`, `regions`, `all_regions`, `discover`, `probe_parallel`, `engines`, `identifiers`); rule (`max_behind`, `warn_days`, `non_compliant_only`, `oracle_any_patch_line`, `fail_on_noncompliant`, `exceptions`, `exception_warn_days`); report files (`formats`, `output_dir`, `prefix`, `tz`, `log_file`, `verbose`); alerts (`alert_emails`, `alert_from`, `alert_on`, `attach_html`, `attach_csv`, `attach_prefix`, `mail_timeout`, `alert_webhooks`, `alert_webhook_format`, `slack_max_chars`, `webhook_timeout`, `webhook_retries`); AWS calls (`aws_timeout`, `max_attempts`, `aws_retry_mode`); and account names at the end (`111111111111 = prod-payments`).
-* **Shipped values**: all regions, probe first, `csv,html,txt` files into `./reports` (created if missing), log in `./reports/run.log`. Use `-o ''` for a quick look on the screen. Fixed internal limits (error text trimmed at 400 characters, names at 64, at most 32 parallel probes) are not settings.
-* The summary script uses the same file; its CLI flags override it, and its files get `_summary` after the prefix.
-* **Upgrading from 1.7.1 or earlier:** an old, partial conf now stops with `missing required setting(s)`; start from the shipped `rds_patch_compliance_report.conf` and copy your values in.
-
-## Tests
-
-No AWS account is used and nothing can reach AWS.
-
-* `tests/run_tests.sh` - 700 checks (including the conf file, `--config`, CLI overrides, the HTML e-mail structure through a fake sendmail, the mail / mailx fallback, and report files that match v1.7.1 except the tool version) - plus the original 500+ checks against `tests/mock/aws` (realistic fleet: Aurora PostgreSQL 11/12/14/15/16 incl. Extended Support, Aurora MySQL 3, RDS PostgreSQL 13/16/17, MySQL 8.0/8.4, MariaDB, SQL Server, Oracle, Multi-AZ DB cluster, DocumentDB, Neptune). Covers counting only from ValidUpgradeTarget (the mock's full list differs on purpose), major targets excluded, the default auto-upgrade target, current version not returned, pending-actions text, version compare units (`15.10 > 15.9`, Aurora MySQL, SQL Server, Oracle), the 2/3 boundary, `--max-behind`, lookup failure (UNKNOWN), deprecated version, lifecycle API missing / denied, multi-profile / multi-region, all regions, filters, outputs, alerts (local stubs), region discovery (empty regions skipped, cluster-only region, probe AccessDenied scanned anyway, `--no-discover`, `-r` without probe, parallel probes faster than serial with the same result, dry-run, `aws_calls`), the region breakdown adding up to the totals in every format, a 3000-instance fleet (no ARG_MAX issues), v1.3.0 `--save-data` / `--merge` (names, contents, read-only calls, zero AWS calls during merge, newer file wins, days recomputed, exit 3 inputs, Windows paths with spaces and a CRLF `jq` stub), and that no file is written into the tool folder. When node, `puppeteer-core` (on `NODE_PATH`) and Chrome are present it also runs `tests/browser_check.js`: filters, recomputed totals and per-region rows, and the CSV export (quoting, BOM, formula guard). **Guard:** it refuses to run unless `aws` on PATH is the mock, and sets fake credentials and a dead endpoint.
-* `tests/validate_cli.sh` - replays every command line the script issues through the **real** AWS CLI v2 with fake credentials and a dead endpoint (`127.0.0.1:9`); checks mock output shapes against `--generate-cli-skeleton output`; and runs the script with the real CLI against a local fake endpoint that pages every list (Marker) to prove pagination, and `-A` against a region-aware fake endpoint to prove each discovery probe is a single request, a denied probe becomes an error region that is still scanned, and only regions with databases get a full scan. A wrapper refuses any real-CLI call without a loopback endpoint.
-
-## Changelog
-
-* **1.8.0**: one conf file next to the scripts (`rds_patch_compliance_report.conf`, loaded automatically, every setting commented, nothing hardcoded; `--config FILE` replaces it, the command line overrides one value; a missing key stops the run naming it); the summary script reads the same conf; the alert e-mail is HTML with a text copy and short-named HTML and CSV attachments (sendmail first; mail / mailx send the text only); new keys `attach_html`, `attach_csv`, `attach_prefix`, `mail_timeout`, `webhook_timeout`, `webhook_retries`, `aws_retry_mode`, `exception_warn_days`. Text and CSV reports, and Slack and webhook payloads, are byte-identical to 1.7.1 for the same values; the HTML report and the JSON file differ only in the tool version. See [CHANGELOG.md](CHANGELOG.md).
-
-* **1.7.1**: Pending maintenance tab: the Action dropdown always lists the standard AWS action types with counts (0 greyed out; other types appended), plus a clickable Actions by type strip; the text report gets a By type line. CSV / JSON unchanged.
-* **1.7.0**: the HTML report has two tabs, **Patch compliance** and **Pending maintenance** (one flat list of actions, soonest first, with its own filters); one shared Export CSV layout on both tabs (one row per server, pending actions summarised at the end); servers link between the tabs; Aurora global database members sit together; the text report gets a PENDING MAINTENANCE section. CSV and JSON columns are unchanged. See [Report](#report).
-* **1.6.0**: compliance exceptions (`--exceptions FILE` / `compliance_exceptions.conf`, see [Compliance exceptions](#compliance-exceptions-v160)). Applied at report and merge time; `--save-data` is unchanged. An unexpired exception turns NON-COMPLIANT into COMPLIANT (EXCEPTION) and counts as compliant; the evaluated status is kept in `actual_status`. UNKNOWN stays UNKNOWN (the exception is still listed against the server). Expiring soon / no longer needed / expired flags. HTML gets an Exception column, an Exceptions quick filter and the Compliant card pop-up. CSV and JSON get 5 columns at the end. Text gets an EXCEPTIONS section. With no file the outputs are unchanged. The summary script is also 1.6.0 and gains `--exceptions FILE`, passed through to the full report (including with `--merge`).
-* **1.5.1** - HTML: Global / Standalone checkboxes replace the Global cluster dropdown (Aurora only); Global databases card with mismatch count; collapsible global section (one line per global DB); amber global badge on mismatch; search covers global DB name, account number, engine and version, opens matching global sections, empty state. Fixes: search is trimmed and case-insensitive everywhere (incl. state restored from the page), special characters match literally, a no-match search shows "No servers match." instead of a blank page, global rows are keyed by account + name (no clash when two accounts use the same global name), and global sections a search opened collapse again when the search clears. Tests: browser_global.js (checkboxes, section, search cases, literal special characters), XSS via global name and hostile search.
-* **1.5.0** - HTML: Engine compliance table under the cards (collapsible majors, Show all majors, sortable, clickable counts, Filtered tag, sticky header); clickable, keyboard-focusable cards in a status row and a risk row with the active card highlighted; new **Flag** dropdown (Extended Support, support ending, auto minor off, pending, not returned) and **All global databases** option; per-engine pop-up on Non-compliant / Unknown; engine server sections collapsible (Expand all / Collapse all); CSV column picker remembered in localStorage; the old per engine and major version table is replaced by the engine table. Account names (config `ACCOUNTID = name` > `iam list-account-aliases` > number), `account_name` column at the end of CSV / JSON (28 CSV columns), text and merge. Mock and tests extended (browser checks, XSS via pop-up and account names).
-
-* **1.4.1** - Security fixes. HTML report: `compliance_status`, `next_maintenance`, `versions_behind` and `pending_actions_count` are now HTML-escaped, so a tampered `--merge` / `--save-data` file can no longer inject markup or script (stored XSS). In-page filters coerce the pending count to a number. The regression test renders a poisoned merge file in headless Chrome. Releases publish `rds-patch-compliance.zip.sha256`, and the README install verifies it with `sha256sum -c` before unzipping. The release workflow pins `actions/checkout` to a commit SHA and is read-only except for the publish job. The report output is otherwise unchanged.
-* **1.4.0** - Aurora global database awareness (read-only `rds describe-global-clusters`, once per account; failure = warning + global `unknown`): `global_cluster` / `global_role` columns at the end, row badge, **Global cluster** dropdown (incl. Not global), Global databases section (overall = worst member, `region status mismatch`, `NOT SCANNED` members, pending actions on the global ARN), `Global databases: N (M members)` in the header, cards and summary script (non-compliant list grouped by global database). `--save-data` adds `globals` / `global_lookup` (`schema_minor: 1`); older files still merge (global unknown). Removed from all displayed outputs: tag columns, `arn`, `upgrade_command` + Copy button, `note`; merge no longer unions tag columns; `-T` ignored with a warning. CSV is 27 columns.
-* **1.3.2** - Release zip contains only runtime files (scripts, `lib/`, README, EXAMPLES, conf example); `docs/`, `samples/`, `tests/` excluded, also from GitHub source archives (`.gitattributes`). Sibling links point to the DBA repo. No report changes.
-* **1.3.1** - Removed the "Top N most behind" section from HTML and text (and `summary.top_behind` from JSON); `--top` / `top =` still accepted, ignored with a warning. Shorter header in HTML and text (title, run time UTC + IST, accounts, region count line, one-line rule); the long explanations moved to a collapsed **About this report** (HTML bottom) / `ABOUT THIS REPORT` (text end). `--merge` reads v1.3.0 and v1.3.1 `--save-data` files from either script (tested with committed v1.3.0 fixtures in `tests/fixtures/v130/`).
-* **summary 1.3.0** - `--save-data [FILE]` and offline `--merge FILE|DIR...` (delegated to the full report, so the data format, exit 3 and Git Bash handling are identical); PER ACCOUNT table and MERGED INPUTS list in txt / html; `*_accounts.csv`; account number in single-account file names; all jq output made LF-only for Git Bash. Full report: `--merge --oracle-any-patch-line` now recounts Oracle rows from the saved targets (previously the flag was ignored in merge mode).
-* **1.3.0** - `--save-data [FILE.json]` (raw data, `rds_patch_<ACCOUNTID>_<YYYYMMDD>.json`) and `--merge FILE|DIR... -o combined.html`: offline (jq only, 0 AWS calls), Git Bash safe (CRLF, Windows paths, spaces), newest `collected_at` wins per account, days recomputed at merge time, exit 3 on a bad input. Account number in single-account file names and in the header, tables and every row; new Per account table; Merged inputs note. HTML filters (account, region, engine, status, DB-name search) that recompute the cards and tables, and Export CSV of the filtered rows. CSV adds `next_maintenance` and `days_until_maintenance` (30 columns).
-* **1.2.1 / summary 1.1.1** - No region names at the top of the HTML report or summary: the report header `<details>` list (with databases / errors / empty) and the summary header list of every enabled region are gone; the header keeps one count line (`Regions: N checked, M with databases, K empty, E errors`). Empty regions are no longer listed anywhere in txt / HTML / CSV: no `Empty :` line, no collapsible empty list, no 0-rows in the per-region table or `*_regions.csv` (counts only). Text header shows region names only for `-r`. JSON unchanged (keeps empty regions and `empty_regions`).
-* **1.2.0 / summary 1.1.0** - `--all-regions` discovery: per region two parallel one-page probes (`--max-records 20 --query length(...) --no-paginate`, `--probe-parallel`, default 8); full scan only where databases are found; a failed probe is an error and the region is still scanned; `--no-discover` / `discover = no`; `-r` regions are never probed; probes in `--dry-run` and `aws_calls`. Header `Regions  : N checked, M with databases, K empty, E errors` + empty-region list. Region-wise breakdown (account x region + All regions) in text, HTML (sortable, colour-coded), JSON, `*_regions.csv` and the summary script (txt / html / `*_regions.csv`).
-* **summary 1.0.0** - New `rds_patch_compliance_summary.sh` (+ `lib/summary.jq`, `tests/run_summary_tests.sh`): high-level summary and the NON-COMPLIANT servers only; reuses the full report for the scan and all counting.
-* **1.1.1** - Oracle: upgrade targets count only on the SAME patch line as the current version (mrp/rur/plain RU/spb; numeric ru date, line date, rN ordering); other lines are excluded with a note. Fixes `...mrp-2026-07.r1` showing `...spb-2026-07.r1` as latest (console offers `...mrp-2026-07.r2`). Same-major safety net for every engine (a target AWS marks as minor but in another major line is excluded and noted). New `--oracle-any-patch-line` / `oracle_any_patch_line`. JSON rows gain `excluded_targets`, `version_warnings`; meta gains `oracle_any_patch_line`. Shared logic in `lib/versions.jq` (same file in RDS_Pending_Maintenance and RDS_Patch_Runner). Mock scenario `oracle`.
-* **1.1.0** - Counting source is now RDS metadata only: per server `describe-db-engine-versions --engine E --engine-version <current>`, `ValidUpgradeTarget[]` with `IsMajorVersionUpgrade=false` (no more full-list counting or own derivation); new column `default_auto_upgrade_target`; current version not returned → UNKNOWN + deprecated note; cache per engine+version+region; summary latest minor = highest valid target seen. Pending maintenance is now `pending_actions_count` + readable `pending_actions` (action, on cluster / member, auto-apply / forced dates, opt-in status, short description), HTML badge with expandable list and IST tooltip, summary by action type, legend.
-* **1.0.0** - First version.
-
-## Caveats
-
-* Valid targets are per region; the report asks in the server's own region.
-* `latest_minor_version` is the highest valid minor target from the current version, which is what the printed command targets. A newer minor that exists for the engine but is not a valid target yet will appear once RDS allows it (or after an intermediate upgrade).
-* Aurora MySQL 2 (`5.7.mysql_aurora.2.x`) and 3 (`8.0.mysql_aurora.3.x`) are different majors.
-* Engines without lifecycle data (DocumentDB, Neptune, and majors AWS does not list) show `unknown` / `n/a`, never `ok`.
+Sibling tools: [RDS_Pending_Maintenance](https://github.com/manideepgrandhi/DBA/tree/main/AWS/RDS_Pending_Maintenance) shows *what maintenance is pending and when*; [RDS_Patch_Runner](https://github.com/manideepgrandhi/DBA/tree/main/AWS/RDS_Patch_Runner) *applies* it to one cluster safely. This tool answers *how far behind are we on minor versions*.
