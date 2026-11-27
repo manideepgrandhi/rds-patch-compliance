@@ -1,10 +1,11 @@
 # Changelog
 
 Plain-English features for each published release. The What's new page is built from this file.
-Only GitHub releases are listed here (older README history before v1.3.1 is not a published release zip).
+Releases from v1.3.1 on have a published release zip. Earlier history (v1.0.0–v1.3.0) is listed at the end for completeness; those versions were not published as a release zip.
 
 ## Unreleased
 - The old `rds_patch_compliance_report.conf.example` file has been removed. Use the shipped `rds_patch_compliance_report.conf`. The release zip no longer includes the old example.
+- The README is now a short user guide. The full reference lives in `REFERENCE.md`, which is also included in the release zip.
 
 ## 1.8.0
 
@@ -79,3 +80,47 @@ Released 27 Nov 2026 (IST).
 - Removed the "Top N most behind" section from HTML and text
 - Shorter header; long explanations moved into a collapsed About this report section
 - `--merge` reads both v1.3.0 and v1.3.1 save-data files
+
+
+## Earlier history (before v1.3.1 release zips)
+
+These notes were previously only in the README. They are kept here so the history is not lost. Longer technical wording is also in [REFERENCE.md](REFERENCE.md#version-notes).
+
+## summary 1.3.0
+- `--save-data [FILE]` and offline `--merge FILE|DIR...` (delegated to the full report, so the data format, exit 3 and Git Bash handling are identical)
+- PER ACCOUNT table and MERGED INPUTS list in txt / html; `*_accounts.csv`; account number in single-account file names; all jq output made LF-only for Git Bash
+- Full report: `--merge --oracle-any-patch-line` now recounts Oracle rows from the saved targets (previously the flag was ignored in merge mode)
+
+## 1.3.0
+- `--save-data [FILE.json]` (raw data, `rds_patch_<ACCOUNTID>_<YYYYMMDD>.json`) and `--merge FILE|DIR... -o combined.html`: offline (jq only, 0 AWS calls), Git Bash safe (CRLF, Windows paths, spaces), newest `collected_at` wins per account, days recomputed at merge time, exit 3 on a bad input
+- Account number in single-account file names and in the header, tables and every row; new Per account table; Merged inputs note
+- HTML filters (account, region, engine, status, DB-name search) that recompute the cards and tables, and Export CSV of the filtered rows
+- CSV adds `next_maintenance` and `days_until_maintenance` (30 columns)
+
+## 1.2.1 / summary 1.1.1
+- No region names at the top of the HTML report or summary: the report header `<details>` list (with databases / errors / empty) and the summary header list of every enabled region are gone; the header keeps one count line (`Regions: N checked, M with databases, K empty, E errors`)
+- Empty regions are no longer listed anywhere in txt / HTML / CSV: no `Empty :` line, no collapsible empty list, no 0-rows in the per-region table or `*_regions.csv` (counts only)
+- Text header shows region names only for `-r`. JSON unchanged (keeps empty regions and `empty_regions`)
+
+## 1.2.0 / summary 1.1.0
+- `--all-regions` discovery: per region two parallel one-page probes (`--max-records 20 --query length(...) --no-paginate`, `--probe-parallel`, default 8); full scan only where databases are found; a failed probe is an error and the region is still scanned; `--no-discover` / `discover = no`; `-r` regions are never probed; probes in `--dry-run` and `aws_calls`
+- Header `Regions  : N checked, M with databases, K empty, E errors` + empty-region list
+- Region-wise breakdown (account x region + All regions) in text, HTML (sortable, colour-coded), JSON, `*_regions.csv` and the summary script (txt / html / `*_regions.csv`)
+
+## summary 1.0.0
+- New `rds_patch_compliance_summary.sh` (+ `lib/summary.jq`, `tests/run_summary_tests.sh`): high-level summary and the NON-COMPLIANT servers only; reuses the full report for the scan and all counting
+
+## 1.1.1
+- Oracle: upgrade targets count only on the SAME patch line as the current version (mrp/rur/plain RU/spb; numeric ru date, line date, rN ordering); other lines are excluded with a note
+- Fixes `...mrp-2026-07.r1` showing `...spb-2026-07.r1` as latest (console offers `...mrp-2026-07.r2`)
+- Same-major safety net for every engine (a target AWS marks as minor but in another major line is excluded and noted)
+- New `--oracle-any-patch-line` / `oracle_any_patch_line`. JSON rows gain `excluded_targets`, `version_warnings`; meta gains `oracle_any_patch_line`
+- Shared logic in `lib/versions.jq` (same file in RDS_Pending_Maintenance and RDS_Patch_Runner). Mock scenario `oracle`
+
+## 1.1.0
+- Counting source is now RDS metadata only: per server `describe-db-engine-versions --engine E --engine-version <current>`, `ValidUpgradeTarget[]` with `IsMajorVersionUpgrade=false` (no more full-list counting or own derivation)
+- New column `default_auto_upgrade_target`; current version not returned → UNKNOWN + deprecated note; cache per engine+version+region; summary latest minor = highest valid target seen
+- Pending maintenance is now `pending_actions_count` + readable `pending_actions` (action, on cluster / member, auto-apply / forced dates, opt-in status, short description), HTML badge with expandable list and IST tooltip, summary by action type, legend
+
+## 1.0.0
+- First version

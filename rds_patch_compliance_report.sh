@@ -170,7 +170,7 @@ Compliance:
       --oracle-any-patch-line
                             Oracle: also count targets on OTHER patch lines (e.g. spb when the server is on mrp).
                             Off: only the same line counts (mrp->mrp, rur->rur, plain RU->plain RU),
-                            matching the RDS console Modify page. See README "Oracle versions".
+                            matching the RDS console Modify page. See REFERENCE.md "Oracle versions".
                             [oracle_any_patch_line = $(cur ORACLE_ANY_LINE)]
       --fail-on-noncompliant  Exit 5 when any NON-COMPLIANT server is found  [fail_on_noncompliant = $(cur FAIL_ON_NC)]
       --exceptions FILE     Compliance exceptions (v1.6.0): lines "account_id | identifier | scope | expires | reason";
