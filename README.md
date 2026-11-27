@@ -392,7 +392,7 @@ Samples: [html](samples/sample_alert_email.html), [text](samples/sample_alert_em
 * **Sections**: accounts and regions (`profiles`, `regions`, `all_regions`, `discover`, `probe_parallel`, `engines`, `identifiers`); rule (`max_behind`, `warn_days`, `non_compliant_only`, `oracle_any_patch_line`, `fail_on_noncompliant`, `exceptions`, `exception_warn_days`); report files (`formats`, `output_dir`, `prefix`, `tz`, `log_file`, `verbose`); alerts (`alert_emails`, `alert_from`, `alert_on`, `attach_html`, `attach_csv`, `attach_prefix`, `mail_timeout`, `alert_webhooks`, `alert_webhook_format`, `slack_max_chars`, `webhook_timeout`, `webhook_retries`); AWS calls (`aws_timeout`, `max_attempts`, `aws_retry_mode`); and account names at the end (`111111111111 = prod-payments`).
 * **Shipped values**: all regions, probe first, `csv,html,txt` files into `./reports` (created if missing), log in `./reports/run.log`. Use `-o ''` for a quick look on the screen. Fixed internal limits (error text trimmed at 400 characters, names at 64, at most 32 parallel probes) are not settings.
 * The summary script uses the same file; its CLI flags override it, and its files get `_summary` after the prefix.
-* **Upgrading from 1.7.1 or earlier:** an old, partial conf now stops with `missing required setting(s)`; start from the shipped file and copy your values in. `rds_patch_compliance_report.conf.example` is the old example and is superseded; it is kept for now.
+* **Upgrading from 1.7.1 or earlier:** an old, partial conf now stops with `missing required setting(s)`; start from the shipped `rds_patch_compliance_report.conf` and copy your values in.
 
 ## Tests
 
