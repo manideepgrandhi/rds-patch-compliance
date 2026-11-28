@@ -47,7 +47,7 @@ P2=(-P prod,nonprod -r us-east-1,ap-south-1)
 
 echo "== usage"
 t help 0 fleet --help; has help out 'versions_behind > --max-behind'
-t version 0 fleet --version; has version out '1.8.0'
+t version 0 fleet --version; has version out '1.8.1'
 t badopt 1 fleet --bogus
 t badfmt 1 fleet -r us-east-1 -F xml
 t htmlnoout 1 fleet -r us-east-1 -F html
@@ -354,7 +354,7 @@ if git -C "$HERE/.." rev-parse -q --verify 'v1.7.1^{commit}' >/dev/null 2>&1; th
             n="$(ls "$OUT/sc_n_$scen/r"/*"$x")"
             same_file_except_ver "$o" "$n" || { echo "       differs: $x"; okf=0; break; }
         done
-        chk "v1.7.1 vs new summary ($scen): 6 files identical apart from the 1.8.0 version string" test "$okf" -eq 1
+        chk "v1.7.1 vs new summary ($scen): 6 files identical apart from the 1.8.1 version string" test "$okf" -eq 1
     done
 else echo "  skip byte-identical check against v1.7.1 (git tag v1.7.1 not available)"; fi
 
