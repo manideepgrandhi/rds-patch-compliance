@@ -3,9 +3,13 @@
 Plain-English features for each published release. The What's new page is built from this file.
 Releases from v1.3.1 on have a published release zip. Earlier history (v1.0.0–v1.3.0) is listed at the end for completeness; those versions were not published as a release zip.
 
-## Unreleased
+## 1.8.1
+
+Released 28 Nov 2026 (IST).
+
 - The old `rds_patch_compliance_report.conf.example` file has been removed. Use the shipped `rds_patch_compliance_report.conf`. The release zip no longer includes the old example.
 - The README is now a short user guide. The full reference lives in `REFERENCE.md`, which is also included in the release zip.
+- An unused sample image (`samples/sample_summary_merged.png`) has been removed
 
 ## 1.8.0
 
